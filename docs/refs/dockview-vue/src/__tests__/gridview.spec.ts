@@ -1,0 +1,250 @@
+import { vi, describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { mount, flushPromises } from '@vue/test-utils';
+import { defineComponent } from 'vue';
+import {
+    createGridview,
+    GridviewApi,
+    PROPERTY_KEYS_GRIDVIEW,
+    Orientation,
+} from 'dockview';
+import GridviewVue from '../gridview/gridview.vue';
+import { VueGridviewPanelView } from '../gridview/view';
+import { VuePart } from '../utils';
+import * as gridviewTypes from '../gridview/types';
+
+const MockGridComponent = defineComponent({
+    name: 'MockGridComponent',
+    props: ['params', 'api', 'containerApi'],
+    template: '<div class="mock-grid">Grid</div>',
+});
+
+describe('GridviewVue Component', () => {
+    test('should export component types', () => {
+        expect(gridviewTypes).toBeDefined();
+        expect(typeof gridviewTypes).toBe('object');
+    });
+
+    test('should export dockview-core functionality', () => {
+        expect(createGridview).toBeDefined();
+        expect(PROPERTY_KEYS_GRIDVIEW).toBeDefined();
+    });
+
+    test('should have correct gridview properties', () => {
+        expect(PROPERTY_KEYS_GRIDVIEW).toContain('proportionalLayout');
+        expect(PROPERTY_KEYS_GRIDVIEW).toContain('hideBorders');
+        expect(PROPERTY_KEYS_GRIDVIEW).toContain('disableAutoResizing');
+    });
+
+    test('should create gridview instance with DOM element', () => {
+        const element = document.createElement('div');
+        document.body.appendChild(element);
+
+        const api = createGridview(element, {
+            orientation: Orientation.HORIZONTAL,
+            proportionalLayout: true,
+            hideBorders: false,
+            createComponent: () =>
+                new VueGridviewPanelView(
+                    'test',
+                    'test-component',
+                    { template: '<div>Test</div>' } as any,
+                    {} as any
+                ),
+        });
+
+        expect(api).toBeDefined();
+        expect(typeof api.layout).toBe('function');
+        expect(typeof api.dispose).toBe('function');
+        expect(typeof api.addPanel).toBe('function');
+        expect(typeof api.updateOptions).toBe('function');
+
+        api.dispose();
+        document.body.removeChild(element);
+    });
+
+    test('should handle proportional layout changes', () => {
+        const element = document.createElement('div');
+        document.body.appendChild(element);
+
+        const api = createGridview(element, {
+            orientation: Orientation.HORIZONTAL,
+            proportionalLayout: false,
+            createComponent: () =>
+                new VueGridviewPanelView(
+                    'test',
+                    'test-component',
+                    { template: '<div>Test</div>' } as any,
+                    {} as any
+                ),
+        });
+
+        // Update proportional layout
+        api.updateOptions({ proportionalLayout: true });
+
+        // Test passes if no errors are thrown
+        expect(true).toBe(true);
+
+        api.dispose();
+        document.body.removeChild(element);
+    });
+
+    test('should add and manage grid panels', () => {
+        const initSpy = vi
+            .spyOn(VuePart.prototype, 'init')
+            .mockImplementation(() => {});
+
+        const element = document.createElement('div');
+        document.body.appendChild(element);
+
+        const api = createGridview(element, {
+            orientation: Orientation.HORIZONTAL,
+            proportionalLayout: true,
+            createComponent: (options) =>
+                new VueGridviewPanelView(
+                    options.id,
+                    options.name,
+                    { template: '<div>Test</div>' } as any,
+                    {} as any
+                ),
+        });
+
+        // Add a panel
+        api.addPanel({
+            id: 'grid-panel-1',
+            component: 'test-component',
+        });
+
+        expect(api.panels.length).toBe(1);
+        expect(api.panels[0].id).toBe('grid-panel-1');
+        expect(initSpy).toHaveBeenCalled();
+
+        // Remove the panel
+        api.removePanel(api.panels[0]);
+        expect(api.panels.length).toBe(0);
+
+        initSpy.mockRestore();
+        api.dispose();
+        document.body.removeChild(element);
+    });
+});
+
+describe('VueGridviewPanelView', () => {
+    let mockVueInstance: any;
+    let mockVueComponent: any;
+    let panelView: VueGridviewPanelView;
+
+    beforeEach(() => {
+        mockVueInstance = {
+            appContext: { components: {} },
+            components: {},
+            parent: null,
+        };
+
+        mockVueComponent = {
+            props: { params: Object, api: Object, containerApi: Object },
+            template: '<div>Test Gridview Panel</div>',
+        };
+
+        panelView = new VueGridviewPanelView(
+            'gridview-test-id',
+            'gridview-test-component',
+            mockVueComponent as any,
+            mockVueInstance
+        );
+    });
+
+    test('should create panel view with correct properties', () => {
+        expect(panelView.id).toBe('gridview-test-id');
+        expect(panelView.element).toBeInstanceOf(HTMLElement);
+        expect(panelView.element.style.height).toBe('100%');
+        expect(panelView.element.style.width).toBe('100%');
+        expect(panelView.element.style.overflow).toBe('hidden');
+    });
+
+    test('should implement GridviewPanel interface', () => {
+        expect(panelView.api).toBeDefined();
+        expect(typeof panelView.getComponent).toBe('function');
+        expect(panelView.element).toBeInstanceOf(HTMLElement);
+    });
+
+    test('should create framework part and call init when getComponent is called', () => {
+        const initSpy = vi
+            .spyOn(VuePart.prototype, 'init')
+            .mockImplementation(() => {});
+
+        // Mock _params to avoid accessor error
+        (panelView as any)._params = {
+            params: {},
+            accessor: { id: 'test-accessor' },
+        };
+
+        const component = panelView.getComponent();
+        expect(component).toBeDefined();
+        expect(component.constructor.name).toBe('VuePart');
+        expect(initSpy).toHaveBeenCalled();
+
+        initSpy.mockRestore();
+    });
+
+    test('should handle empty params', () => {
+        const initSpy = vi
+            .spyOn(VuePart.prototype, 'init')
+            .mockImplementation(() => {});
+
+        // Mock _params to avoid accessor error
+        (panelView as any)._params = {
+            params: {},
+            accessor: { id: 'test-accessor' },
+        };
+
+        const component = panelView.getComponent();
+        expect(component).toBeDefined();
+
+        initSpy.mockRestore();
+    });
+});
+
+// Regression coverage for https://github.com/mathuo/dockview/issues/1301
+describe('GridviewVue components prop resolves without registration', () => {
+    let wrapper: ReturnType<typeof mount>;
+
+    afterEach(() => {
+        wrapper?.unmount();
+    });
+
+    test('addPanel resolves component from props.components alone', async () => {
+        wrapper = mount(GridviewVue, {
+            props: {
+                orientation: Orientation.HORIZONTAL,
+                components: { Cell: MockGridComponent },
+            },
+            attachTo: document.body,
+        });
+        await flushPromises();
+
+        const api = (wrapper.emitted('ready')![0][0] as any).api as GridviewApi;
+
+        expect(() =>
+            api.addPanel({ id: 'cell-1', component: 'Cell' })
+        ).not.toThrow();
+
+        expect(api.getPanel('cell-1')).toBeDefined();
+    });
+
+    test('throws when component name is not in the map and not registered', async () => {
+        wrapper = mount(GridviewVue, {
+            props: {
+                orientation: Orientation.HORIZONTAL,
+                components: { Cell: MockGridComponent },
+            },
+            attachTo: document.body,
+        });
+        await flushPromises();
+
+        const api = (wrapper.emitted('ready')![0][0] as any).api as GridviewApi;
+
+        expect(() =>
+            api.addPanel({ id: 'bad', component: 'NotRegistered' })
+        ).toThrow("Failed to find Vue Component 'NotRegistered'");
+    });
+});

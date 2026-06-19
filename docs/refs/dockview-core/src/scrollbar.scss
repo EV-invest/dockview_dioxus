@@ -1,0 +1,44 @@
+.dv-scrollable {
+    position: relative;
+    overflow: hidden;
+
+    .dv-scrollbar {
+        position: absolute;
+        border-radius: 2px;
+        background-color: transparent;
+        
+        /* GPU optimizations */
+        will-change: background-color, transform;
+        transform: translate3d(0, 0, 0);
+        backface-visibility: hidden;
+        
+        transition-property: background-color;
+        transition-timing-function: ease-in-out;
+        transition-duration: 1s;
+        transition-delay: 0s;
+    }
+
+
+    .dv-scrollbar-horizontal {
+        bottom: 0px;
+        left: 0px;
+        height: 4px;
+    }
+
+    .dv-scrollbar-vertical {
+        right: 0px;
+        top: 0px;
+        width: 4px;
+    }
+
+    &:hover,
+    &.dv-scrollable-resizing,
+    &.dv-scrollable-scrolling {
+        .dv-scrollbar {
+            background-color: var(
+                --dv-scrollbar-background-color,
+                rgba(255, 255, 255, 0.25)
+            );
+        }
+    }
+}

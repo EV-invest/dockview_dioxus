@@ -3,13 +3,33 @@ name = "dockview_dioxus"
 version = "0.1.0"
 edition = "2024"
 
+# A dockview-faithful tiling/docking layout library for Dioxus. Web-only (DOM-backed).
+[lib]
+
+# DOM measurement + localStorage + pointer capture live behind the wasm target;
+# the pure model/api compile everywhere so `cargo check` stays green natively.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "^0.2"
+web-sys = { version = "^0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "DomRect",
+    "DomRectReadOnly",
+    "Storage",
+    "CssStyleDeclaration",
+] }
+
 [dependencies]
-clap.workspace = true
-color-eyre.workspace = true
 derive-new.workspace = true
-dockview_dioxus_macros.workspace = true
-miette.workspace = true
-v_utils.workspace = true
+dioxus.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# The runnable demo needs an actual renderer; the library itself stays renderer-agnostic.
+[dev-dependencies]
+dioxus = { workspace = true, features = ["web"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,26 @@
+.dv-render-overlay {
+    --dv-overlay-z-index: var(--dv-overlay-z-index, 999);
+
+    position: absolute;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    contain: layout paint;
+    isolation: isolate;
+    
+    /* GPU optimizations */
+    will-change: transform;
+    transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
+
+    &.dv-render-overlay-float {
+        z-index: calc(var(--dv-overlay-z-index) - 1);
+    }
+}
+
+.dv-debug {
+    .dv-render-overlay {
+        outline: 1px solid red;
+        outline-offset: -1;
+    }
+}

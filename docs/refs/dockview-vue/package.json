@@ -1,0 +1,81 @@
+{
+    "name": "dockview-vue",
+    "version": "6.6.1",
+    "description": "Vue 3 docking layout manager — tabs, groups, grids, splitviews, drag and drop, floating panels",
+    "keywords": [
+        "splitview",
+        "split-view",
+        "gridview",
+        "grid-view",
+        "dockview",
+        "dock-view",
+        "grid",
+        "tabs",
+        "layout",
+        "layout manager",
+        "dock layout",
+        "dock",
+        "docking",
+        "splitter",
+        "drag-and-drop",
+        "drag",
+        "drop",
+        "touch",
+        "mobile",
+        "typescript",
+        "zero-dependency",
+        "ide-layout",
+        "panel",
+        "resizable",
+        "floating",
+        "serialization",
+        "workbench",
+        "vue",
+        "vue-component",
+        "vue3",
+        "composition-api"
+    ],
+    "main": "dist/dockview-vue.umd.js",
+    "module": "dist/dockview-vue.es.js",
+    "types": "dist/types/index.d.ts",
+    "sideEffects": [
+        "**/*.css",
+        "**/*.scss"
+    ],
+    "homepage": "https://github.com/mathuo/dockview",
+    "bugs": {
+        "url": "https://github.com/mathuo/dockview/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/mathuo/dockview.git"
+    },
+    "type": "module",
+    "license": "MIT",
+    "author": "https://github.com/mathuo",
+    "files": [
+        "dist",
+        "README.md"
+    ],
+    "scripts": {
+        "build:bundle": "echo 'noop'",
+        "build:js": "vite build",
+        "build:types": "vue-tsc --project tsconfig.build-types.json --declaration --emitDeclarationOnly --outDir dist/types",
+        "build:css": "node scripts/copy-css.cjs",
+        "build": "npm run build:js && npm run build:types && npm run build:css",
+        "clean": "rimraf dist/ .build/ .rollup.cache/",
+        "rebuild": "npm run clean && npm run build",
+        "test": "vitest run",
+        "test:cov": "vitest run --coverage",
+        "lint": "eslint 'src/**/*.{ts,tsx,js,jsx,vue}'",
+        "lint:fix": "eslint 'src/**/*.{ts,tsx,js,jsx,vue}' --fix",
+        "format": "prettier --write 'src/**/*.{ts,tsx,js,jsx,vue}'",
+        "format:check": "prettier --check 'src/**/*.{ts,tsx,js,jsx,vue}'"
+    },
+    "dependencies": {
+        "dockview": "^6.6.1"
+    },
+    "peerDependencies": {
+        "vue": "^3.4.0"
+    }
+}
