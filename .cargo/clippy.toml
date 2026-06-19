@@ -1,0 +1,8 @@
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-len-without-is-empty = true
+allow-print-in-tests = true
+allow-unwrap-in-tests = true
+float_cmp = "allow"
+len_zero = "allow"
+undocumented_unsafe_blocks = "warn"

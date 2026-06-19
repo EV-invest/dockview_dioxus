@@ -1,0 +1,47 @@
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_RETRY: '10'
+  RUSTUP_MAX_RETRIES: '10'
+  RUST_BACKTRACE: short
+jobs:
+  pre_ci:
+    uses: valeratrades/.github/.github/workflows/pre_ci.yml@master
+  rust-tests:
+    if: needs.pre_ci.outputs.continue
+    name: Rust ${{matrix.rust}}
+    needs: pre_ci
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{matrix.rust}}
+    - name: Install mold
+      uses: rui314/setup-mold@v1
+    - if: github.ref == 'refs/heads/release'
+      name: Set RUSTFLAGS for release branch
+      run: echo "RUSTFLAGS=-Dwarnings" >> $GITHUB_ENV
+    - if: matrix.rust == 'nightly'
+      name: Enable type layout randomization
+      run: echo RUSTFLAGS=${RUSTFLAGS}\ -Zrandomize-layout\ --cfg=exhaustive >> $GITHUB_ENV
+    - name: Download modified by pre-ci Cargo.toml files
+      uses: actions/download-artifact@v4
+      with:
+        name: modified-cargo-files
+    - run: cargo update
+    - run: cargo check
+    - run: cargo test
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+        - nightly
+        - nightly-2026-06-18
+    timeout-minutes: 45
+name: Errors
+'on':
+  pull_request: {}
+  push: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read

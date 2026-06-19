@@ -1,0 +1,73 @@
+## Conventional
+**/tmp/
+**/target/
+**/debug/
+**/bin/
+**/*.test
+**/*.out
+**/*.db
+
+## Personal
+**/_.*
+.local.sh
+[push]
+**/TODO.md
+commit-message.txt
+commit_message.txt
+commit-message
+commit_message
+commit
+functions.sh
+
+## Nix
+result
+.direnv/
+.devenv/
+
+## Vim
+*.sw[po]
+
+## MacOS
+.DS_Store
+*.dylib
+
+## Shared Objects and backups
+**/*.bak
+**/*.bk
+**/*.so
+
+## Virtual Environments
+.env/
+.venv/
+env/
+venv/
+.env.*
+!**/*.env.example
+./*/.env
+./*/.env.*
+
+
+## VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/*.code-snippets
+
+## Windows
+*.exe
+*.exe~
+*.dll
+
+## Web
+**/*.sass-cache/
+./*/node_modules/
+
+## Other Tools
+.codeviz/
+## Rust
+**/**.pending-snap
+### could be used for initial debugging of apps using `config` crate
+/config.toml
+**/rustc-ice*

@@ -1,0 +1,55 @@
+jobs:
+  loc-badge:
+    name: Update LOC Badge
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - env:
+        LOC_GIST_TOKEN: ${{ secrets.loc_gist_token }}
+      name: Check for loc_gist_token secret
+      run: "if [ -z \"$LOC_GIST_TOKEN\" ]; then\n  echo \"::error::Secret 'loc_gist_token'\
+        \ is not set for this repository.\"\n  echo \"::error::To fix this, run one\
+        \ of the following commands:\"\n  echo \"::error::  1. For this repo only:\
+        \ gh secret set loc_gist_token --repo $GITHUB_REPOSITORY --body YOUR_TOKEN\"\
+        \n  echo \"::error::  2. For all repos: https://github.com/valeratrades/nix/tree/e4338bf5943d7403b949a8e079f9073987d9cd68/home/scripts/shared_github_secrets.bash\"\
+        \n  exit 1\nfi\n"
+    - name: Install tokei
+      run: cargo install tokei
+    - id: count
+      name: Count lines of code
+      run: '# Extract repository name (e.g., "valeratrades/readme-fw" -> "readme-fw")
+
+        PNAME="${GITHUB_REPOSITORY##*/}"
+
+        echo "pname=$PNAME" >> $GITHUB_OUTPUT
+
+
+        LOC=$(tokei --output json | jq ''.Total.code'')
+
+        echo "loc=$LOC" >> $GITHUB_OUTPUT
+
+        echo "Lines of code for $PNAME: $LOC"
+
+
+        # Generate JSON with project-specific filename
+
+        echo "{\"schemaVersion\": 1, \"label\": \"LoC\", \"message\": \"$LOC\", \"color\":
+        \"lightblue\"}" > ${PNAME}-loc.json
+
+        '
+    - name: Display generated JSON
+      run: cat ${{ steps.count.outputs.pname }}-loc.json
+    - name: Update gist
+      uses: exuanbo/actions-deploy-gist@v1
+      with:
+        file_path: ${{ steps.count.outputs.pname }}-loc.json
+        gist_id: b48e6f02c61942200e7d1e3eeabf9bcb
+        token: ${{ secrets.loc_gist_token }}
+name: Other
+'on':
+  pull_request: {}
+  push: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read

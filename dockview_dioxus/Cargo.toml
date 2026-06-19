@@ -1,0 +1,15 @@
+[package]
+name = "dockview_dioxus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap.workspace = true
+color-eyre.workspace = true
+derive-new.workspace = true
+dockview_dioxus_macros.workspace = true
+miette.workspace = true
+v_utils.workspace = true
+
+[lints]
+workspace = true

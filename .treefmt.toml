@@ -1,0 +1,21 @@
+[formatter.nix]
+command = "nixpkgs-fmt"
+includes = ["*.nix"]
+
+[formatter.rust]
+command = "rustfmt"
+includes = ["*.rs"]
+options = ["--edition", "2024"]
+
+[formatter.rust-leptos]
+command = "leptosfmt"
+includes = ["*.rs"]
+options = ["--tab-spaces", "2", "--max-width", "100"]
+
+[formatter.typst]
+command = "typstyle"
+includes = ["*.typ"]
+options = ["-i", "--line-width", "190", "--indent-width", "2"]
+
+[global]
+excludes = ["examples/config.*"]
