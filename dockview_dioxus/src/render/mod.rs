@@ -102,8 +102,12 @@ impl From<dioxus::html::geometry::PixelsRect> for Rect {
 /// - `panels`: the widgets to host; their order here is the stable render order of the
 ///   content overlay (independent of layout), which is what preserves instances.
 /// - `storage_key`: `localStorage` key for autosave/restore; `None` disables persistence.
+/// - `on_ready`: dockview's `onReady` — invoked once with the [`DockApi`] when the layout
+///   starts from the *default* (a single group of all panels), so a host can script the
+///   initial split layout. Skipped when a saved layout was restored, so reloads keep the
+///   user's arrangement and never re-seed.
 #[component]
-pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element {
+pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>, on_ready: Option<Callback<DockApi>>) -> Element {
 	// Restore branches three ways: absent storage → default layout; present+valid →
 	// restored; present+corrupt → an error watermark (never a silent reset).
 	let initial = use_hook({
@@ -118,8 +122,12 @@ pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element 
 		Restore::Corrupt(e) => Some(e.clone()),
 		_ => None,
 	};
+	// Only seed via `on_ready` when we built the default layout — a restored layout is the
+	// user's own arrangement and must win.
+	let seed_on_ready = matches!(&initial, Restore::Default);
 
-	use_context_provider(|| DockApi { model });
+	let api = DockApi { model };
+	use_context_provider(|| api);
 	use_context_provider(|| Signal::new(HashMap::<GroupId, Rect>::new())); // GroupBoxes
 	use_context_provider(|| Signal::new(None::<DragState>)); // shared drag state for tab/group DnD
 	let mut root_origin: RootOrigin = use_context_provider(|| Signal::new(None));
@@ -134,6 +142,20 @@ pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element 
 			let json = crate::model::serial::save(&model.read());
 			if let Some(key) = storage_key.as_deref() {
 				crate::persist::write(key, &json);
+			}
+		});
+	}
+
+	// Fire `on_ready` exactly once, after mount, on a fresh default layout. The `seeded`
+	// guard holds even though seeding writes the model (which re-triggers this effect).
+	{
+		let mut seeded = use_signal(|| false);
+		use_effect(move || {
+			if seed_on_ready && !seeded() {
+				seeded.set(true);
+				if let Some(cb) = on_ready {
+					cb.call(api);
+				}
 			}
 		});
 	}

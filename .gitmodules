@@ -1,0 +1,3 @@
+[submodule "docs/refs/dockview"]
+	path = docs/refs/dockview
+	url = https://github.com/mathuo/dockview
