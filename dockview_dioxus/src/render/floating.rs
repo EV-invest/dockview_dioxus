@@ -14,6 +14,9 @@ use dioxus::prelude::*;
 use super::group::GroupFrame;
 use crate::{api::DockApi, model::GroupAddr};
 
+/// Minimum floating-frame size (px) the corner resize respects.
+const MIN_W: f64 = 120.0;
+const MIN_H: f64 = 80.0;
 /// Render each entry of `model.floating` as a movable/resizable overlay frame, keyed by
 /// group id so reorders don't remount.
 #[component]
@@ -26,10 +29,6 @@ pub fn FloatingLayer() -> Element {
 		}
 	}
 }
-
-/// Minimum floating-frame size (px) the corner resize respects.
-const MIN_W: f64 = 120.0;
-const MIN_H: f64 = 80.0;
 
 /// Corner-resize gesture captured at `pointerdown`: pointer start + the rect's size then.
 #[derive(Clone, Copy)]

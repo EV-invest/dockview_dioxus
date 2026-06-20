@@ -12,11 +12,9 @@
 //! Inactive-tab and off-screen panels render `display:none` (dockview's `'always'`
 //! renderer) so their state survives, rather than unmounting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dioxus::prelude::*;
-
-use std::collections::HashSet;
 
 use super::{GroupBoxes, RootOrigin};
 use crate::{
@@ -44,7 +42,9 @@ pub fn ContentLayer(panels: Vec<DockPanel>) -> Element {
 		if let Some(grid) = model.grid.as_ref() {
 			let leaves = match &model.maximized {
 				Some(loc) => {
-					let GridNode::Leaf(g) = grid.at(loc).expect("maximized location resolves") else { panic!("maximized must be a leaf") };
+					let GridNode::Leaf(g) = grid.at(loc).expect("maximized location resolves") else {
+						panic!("maximized must be a leaf")
+					};
 					vec![(loc.clone(), g)]
 				}
 				None => grid.leaves(),
@@ -122,7 +122,11 @@ mod tests {
 	}
 
 	fn leaf(id: u64, tabs: &[&str], active: usize) -> GridNode {
-		GridNode::Leaf(Group { id: GroupId(id), tabs: tabs.iter().map(|s| PanelId((*s).into())).collect(), active })
+		GridNode::Leaf(Group {
+			id: GroupId(id),
+			tabs: tabs.iter().map(|s| PanelId((*s).into())).collect(),
+			active,
+		})
 	}
 
 	fn model_with(grid: GridNode, ids: &[&str]) -> DockModel {
@@ -146,7 +150,11 @@ mod tests {
 		let panels: Vec<DockPanel> = IDS.with(|ids| {
 			ids.borrow()
 				.iter()
-				.map(|id| DockPanel { id: PanelId((*id).into()), title: id.to_string(), content: rsx! { span { "content-{id}" } } })
+				.map(|id| DockPanel {
+					id: PanelId((*id).into()),
+					title: id.to_string(),
+					content: rsx! { span { "content-{id}" } },
+				})
 				.collect()
 		});
 		rsx! { ContentLayer { panels } }
@@ -168,11 +176,26 @@ mod tests {
 	fn all_panels_mount_hidden_pre_measure() {
 		let inner = GridNode::Branch {
 			orientation: crate::geometry::Orientation::Vertical,
-			children: vec![Child { node: leaf(2, &["c"], 0), size: 50.0 }, Child { node: leaf(3, &["d"], 0), size: 50.0 }],
+			children: vec![
+				Child {
+					node: leaf(2, &["c"], 0),
+					size: 50.0,
+				},
+				Child {
+					node: leaf(3, &["d"], 0),
+					size: 50.0,
+				},
+			],
 		};
 		let grid = GridNode::Branch {
 			orientation: crate::geometry::Orientation::Horizontal,
-			children: vec![Child { node: leaf(1, &["a", "b"], 0), size: 60.0 }, Child { node: inner, size: 40.0 }],
+			children: vec![
+				Child {
+					node: leaf(1, &["a", "b"], 0),
+					size: 60.0,
+				},
+				Child { node: inner, size: 40.0 },
+			],
 		};
 		MODEL.with(|m| *m.borrow_mut() = Some(model_with(grid, &["a", "b", "c", "d"])));
 		IDS.with(|i| *i.borrow_mut() = vec!["a", "b", "c", "d"]);
@@ -193,7 +216,10 @@ mod tests {
 		let mut dom = VirtualDom::new(TestRoot);
 		dom.rebuild_in_place();
 		let parts = chunks(&dioxus_ssr::render(&dom));
-		assert!(parts[1].contains("content-a") && parts[1].contains("visibility:hidden"), "active-unmeasured a is hidden, not none");
+		assert!(
+			parts[1].contains("content-a") && parts[1].contains("visibility:hidden"),
+			"active-unmeasured a is hidden, not none"
+		);
 		assert!(parts[2].contains("content-b") && parts[2].contains("display:none"), "inactive b is display:none");
 
 		let mut sig = SIG.with(|s| s.borrow().expect("root mounted"));
@@ -220,7 +246,11 @@ mod tests {
 
 		let mut drag = DRAG.with(|d| d.borrow().expect("mounted"));
 		dom.in_runtime(|| {
-			drag.set(Some(DragState { source: crate::model::dnd::DragSource::Group(GroupId(1)), hover: None, floating_move: None }));
+			drag.set(Some(DragState {
+				source: crate::model::dnd::DragSource::Group(GroupId(1)),
+				hover: None,
+				floating_move: None,
+			}));
 		});
 		dom.render_immediate_to_vec();
 		let html = dioxus_ssr::render(&dom);
@@ -231,11 +261,26 @@ mod tests {
 	fn maximize_hosts_only_that_leaf() {
 		let inner = GridNode::Branch {
 			orientation: crate::geometry::Orientation::Vertical,
-			children: vec![Child { node: leaf(2, &["c"], 0), size: 50.0 }, Child { node: leaf(3, &["d"], 0), size: 50.0 }],
+			children: vec![
+				Child {
+					node: leaf(2, &["c"], 0),
+					size: 50.0,
+				},
+				Child {
+					node: leaf(3, &["d"], 0),
+					size: 50.0,
+				},
+			],
 		};
 		let grid = GridNode::Branch {
 			orientation: crate::geometry::Orientation::Horizontal,
-			children: vec![Child { node: leaf(1, &["a", "b"], 0), size: 60.0 }, Child { node: inner, size: 40.0 }],
+			children: vec![
+				Child {
+					node: leaf(1, &["a", "b"], 0),
+					size: 60.0,
+				},
+				Child { node: inner, size: 40.0 },
+			],
 		};
 		let mut m = model_with(grid, &["a", "b", "c", "d"]);
 		m.maximized = Some(vec![0]); // maximize g1{a,b}; the V-branch leaves vanish from the host set.
@@ -252,7 +297,11 @@ mod tests {
 	fn floating_group_panel_is_hosted() {
 		let mut m = model_with(leaf(1, &["a"], 0), &["a", "b"]);
 		m.floating.push(crate::model::FloatingGroup {
-			group: Group { id: GroupId(2), tabs: vec![PanelId("b".into())], active: 0 },
+			group: Group {
+				id: GroupId(2),
+				tabs: vec![PanelId("b".into())],
+				active: 0,
+			},
 			rect: Rect::default(),
 		});
 		MODEL.with(|x| *x.borrow_mut() = Some(m));

@@ -126,7 +126,11 @@ mod tests {
 	#[component]
 	fn TestRoot() -> Element {
 		let mut m = DockModel::default();
-		m.grid = Some(GridNode::Leaf(Group { id: GroupId(1), tabs: vec![PanelId("a".into())], active: 0 }));
+		m.grid = Some(GridNode::Leaf(Group {
+			id: GroupId(1),
+			tabs: vec![PanelId("a".into())],
+			active: 0,
+		}));
 		m.panels.insert(PanelId("a".into()), PanelMeta { title: "A".into() });
 		let model = use_signal(|| m);
 		use_context_provider(|| DockApi { model });
@@ -148,8 +152,21 @@ mod tests {
 		let mut origin = ORIGIN.with(|o| o.borrow().expect("mounted"));
 		let mut drag = DRAG.with(|d| d.borrow().expect("mounted"));
 		dom.in_runtime(|| {
-			boxes.write().insert(GroupId(1), Rect { x: 0.0, y: 0.0, width: 100.0, height: 80.0 });
-			origin.set(Some(Rect { x: 0.0, y: 0.0, width: 100.0, height: 80.0 }));
+			boxes.write().insert(
+				GroupId(1),
+				Rect {
+					x: 0.0,
+					y: 0.0,
+					width: 100.0,
+					height: 80.0,
+				},
+			);
+			origin.set(Some(Rect {
+				x: 0.0,
+				y: 0.0,
+				width: 100.0,
+				height: 80.0,
+			}));
 			drag.set(Some(DragState {
 				source: crate::model::dnd::DragSource::Group(GroupId(1)),
 				hover: Some((vec![], Position::Right)),

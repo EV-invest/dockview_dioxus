@@ -87,22 +87,6 @@ pub fn GridNodeView(node: GridNode, location: Location) -> Element {
 	}
 }
 
-/// In-flight resize captured at `pointerdown`: absolute-from-start (not incremental)
-/// to avoid clamp drift. Each `pointermove` resets the pair to `start_sizes` then
-/// applies `resize_pair` with the cumulative delta.
-#[derive(Clone)]
-struct ResizeDrag {
-	parent: Location,
-	index: usize,
-	orientation: Orientation,
-	/// Pointer coord along the split axis at `pointerdown`.
-	start_px: f64,
-	/// Parent branch size along the split axis (px), for delta→percent conversion.
-	axis_px: f64,
-	/// The two siblings' percentages at `pointerdown`.
-	start_sizes: [f64; 2],
-}
-
 /// The draggable divider between children `index` and `index+1` of the branch at
 /// `parent`. Pointer-drag updates the two siblings' percentages via
 /// [`splitview::resize_pair`](crate::model::splitview::resize_pair).
@@ -175,4 +159,19 @@ pub fn Splitter(parent: Location, index: usize, orientation: Orientation, branch
 			}
 		}
 	}
+}
+/// In-flight resize captured at `pointerdown`: absolute-from-start (not incremental)
+/// to avoid clamp drift. Each `pointermove` resets the pair to `start_sizes` then
+/// applies `resize_pair` with the cumulative delta.
+#[derive(Clone)]
+struct ResizeDrag {
+	parent: Location,
+	index: usize,
+	orientation: Orientation,
+	/// Pointer coord along the split axis at `pointerdown`.
+	start_px: f64,
+	/// Parent branch size along the split axis (px), for delta→percent conversion.
+	axis_px: f64,
+	/// The two siblings' percentages at `pointerdown`.
+	start_sizes: [f64; 2],
 }

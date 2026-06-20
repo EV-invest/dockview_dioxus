@@ -25,10 +25,53 @@ use dioxus::prelude::*;
 use crate::{
 	api::DockApi,
 	math::Rect,
-	model::{DockModel, GroupId, PanelMeta, dnd::DragState, group::Group, gridview::GridNode},
+	model::{DockModel, GroupId, PanelMeta, dnd::DragState, gridview::GridNode, group::Group},
 	panel::DockPanel,
 };
 
+/// Minimal structural stylesheet. Layout (flex/sizing) ships with the lib; all
+/// colors/sizes read from `--dv-*` custom properties so a host can re-theme without
+/// us hardcoding a palette. Not a port of dockview's full SCSS theme.
+const CSS: &str = r#"
+.dv-dockview { position: relative; width: 100%; height: 100%; overflow: hidden;
+	color: var(--dv-fg, #ddd); font: 13px/1.4 system-ui, sans-serif; }
+.dv-branch { display: flex; width: 100%; height: 100%; }
+.dv-row { flex-direction: row; }
+.dv-col { flex-direction: column; }
+.dv-child { position: relative; overflow: hidden; flex-grow: 0; flex-shrink: 0;
+	min-width: 40px; min-height: 40px; }
+.dv-splitter { flex: 0 0 var(--dv-splitter-size, 4px);
+	background: var(--dv-splitter-bg, #333); }
+.dv-row > .dv-splitter { cursor: col-resize; }
+.dv-col > .dv-splitter { cursor: row-resize; }
+.dv-group { display: flex; flex-direction: column; width: 100%; height: 100%;
+	background: var(--dv-group-bg, #1e1e1e); }
+.dv-titlebar { flex: 0 0 auto; padding: 4px 8px; font-weight: 600;
+	background: var(--dv-titlebar-bg, #252526); }
+.dv-tabstrip { flex: 0 0 auto; display: flex; overflow-x: auto;
+	background: var(--dv-tabstrip-bg, #2d2d2d); }
+.dv-tab { padding: 4px 12px; white-space: nowrap; cursor: pointer;
+	background: var(--dv-tab-bg, #2d2d2d); border-right: 1px solid var(--dv-tab-border, #1e1e1e); }
+.dv-tab.dv-active { background: var(--dv-tab-active-bg, #1e1e1e);
+	color: var(--dv-tab-active-fg, #fff); }
+.dv-content-slot { flex: 1 1 auto; overflow: hidden; }
+.dv-overlay { position: absolute; inset: 0; pointer-events: none; }
+.dv-render-overlay { position: absolute; overflow: hidden; pointer-events: auto; }
+.dv-render-overlay.dv-dragging { pointer-events: none; }
+.dv-drop-capture { position: fixed; inset: 0; z-index: 900; }
+.dv-drop-target { position: absolute; pointer-events: none; z-index: 901; }
+.dv-drop-highlight { position: absolute;
+	background: var(--dv-drop-bg, rgba(80,140,255,.3)); }
+.dv-watermark { display: flex; width: 100%; height: 100%;
+	align-items: center; justify-content: center; opacity: 0.5; }
+.dv-floating { position: absolute; z-index: 100; pointer-events: auto;
+	box-shadow: 0 4px 16px rgba(0,0,0,.5); border: 1px solid var(--dv-floating-border, #444); }
+.dv-resize-handle { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px;
+	cursor: nwse-resize; z-index: 101; background: var(--dv-resize-bg, #555); }
+.dv-error-watermark { display: flex; width: 100%; height: 100%; padding: 16px;
+	align-items: center; justify-content: center; text-align: center; white-space: pre-wrap;
+	color: var(--dv-error-fg, #f77); }
+"#;
 /// Measured pixel box of each group's content slot, in **raw viewport** coords.
 /// Group frames write theirs via `onmounted`/`onresize`; the content overlay localizes
 /// them (`slot - root`, see [`RootOrigin`]) before positioning panels. Storing raw (not
@@ -43,7 +86,12 @@ pub type RootOrigin = Signal<Option<Rect>>;
 
 impl From<dioxus::html::geometry::PixelsRect> for Rect {
 	fn from(r: dioxus::html::geometry::PixelsRect) -> Self {
-		Rect { x: r.origin.x, y: r.origin.y, width: r.size.width, height: r.size.height }
+		Rect {
+			x: r.origin.x,
+			y: r.origin.y,
+			width: r.size.width,
+			height: r.size.height,
+		}
 	}
 }
 
@@ -124,25 +172,6 @@ pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element 
 	}
 }
 
-/// Outcome of reading saved layout JSON: nothing stored, a valid layout, or a corrupt
-/// payload (whose message we surface rather than silently discarding the workspace).
-#[derive(Clone)]
-enum Restore {
-	Default,
-	Loaded(DockModel),
-	Corrupt(String),
-}
-
-fn restore(json: Option<&str>) -> Restore {
-	match json {
-		None => Restore::Default,
-		Some(j) => match crate::model::serial::load(j) {
-			Ok(m) => Restore::Loaded(m),
-			Err(e) => Restore::Corrupt(format!("{e:?}")),
-		},
-	}
-}
-
 /// The "stack unless positioned" default: every panel as a tab in one group (dockview's
 /// behavior when `addPanel` is given no position).
 pub fn default_layout(panels: &[DockPanel]) -> DockModel {
@@ -163,6 +192,24 @@ pub fn default_layout(panels: &[DockPanel]) -> DockModel {
 	}
 	m
 }
+/// Outcome of reading saved layout JSON: nothing stored, a valid layout, or a corrupt
+/// payload (whose message we surface rather than silently discarding the workspace).
+#[derive(Clone)]
+enum Restore {
+	Default,
+	Loaded(DockModel),
+	Corrupt(String),
+}
+
+fn restore(json: Option<&str>) -> Restore {
+	match json {
+		None => Restore::Default,
+		Some(j) => match crate::model::serial::load(j) {
+			Ok(m) => Restore::Loaded(m),
+			Err(e) => Restore::Corrupt(format!("{e:?}")),
+		},
+	}
+}
 
 /// Shown in place of the dock when a saved layout fails to parse — keeps the corrupt
 /// payload visible instead of wiping it.
@@ -172,50 +219,6 @@ fn ErrorWatermark(message: String) -> Element {
 		div { class: "dv-error-watermark", "Failed to load saved layout:\n{message}" }
 	}
 }
-
-/// Minimal structural stylesheet. Layout (flex/sizing) ships with the lib; all
-/// colors/sizes read from `--dv-*` custom properties so a host can re-theme without
-/// us hardcoding a palette. Not a port of dockview's full SCSS theme.
-const CSS: &str = r#"
-.dv-dockview { position: relative; width: 100%; height: 100%; overflow: hidden;
-	color: var(--dv-fg, #ddd); font: 13px/1.4 system-ui, sans-serif; }
-.dv-branch { display: flex; width: 100%; height: 100%; }
-.dv-row { flex-direction: row; }
-.dv-col { flex-direction: column; }
-.dv-child { position: relative; overflow: hidden; flex-grow: 0; flex-shrink: 0;
-	min-width: 40px; min-height: 40px; }
-.dv-splitter { flex: 0 0 var(--dv-splitter-size, 4px);
-	background: var(--dv-splitter-bg, #333); }
-.dv-row > .dv-splitter { cursor: col-resize; }
-.dv-col > .dv-splitter { cursor: row-resize; }
-.dv-group { display: flex; flex-direction: column; width: 100%; height: 100%;
-	background: var(--dv-group-bg, #1e1e1e); }
-.dv-titlebar { flex: 0 0 auto; padding: 4px 8px; font-weight: 600;
-	background: var(--dv-titlebar-bg, #252526); }
-.dv-tabstrip { flex: 0 0 auto; display: flex; overflow-x: auto;
-	background: var(--dv-tabstrip-bg, #2d2d2d); }
-.dv-tab { padding: 4px 12px; white-space: nowrap; cursor: pointer;
-	background: var(--dv-tab-bg, #2d2d2d); border-right: 1px solid var(--dv-tab-border, #1e1e1e); }
-.dv-tab.dv-active { background: var(--dv-tab-active-bg, #1e1e1e);
-	color: var(--dv-tab-active-fg, #fff); }
-.dv-content-slot { flex: 1 1 auto; overflow: hidden; }
-.dv-overlay { position: absolute; inset: 0; pointer-events: none; }
-.dv-render-overlay { position: absolute; overflow: hidden; pointer-events: auto; }
-.dv-render-overlay.dv-dragging { pointer-events: none; }
-.dv-drop-capture { position: fixed; inset: 0; z-index: 900; }
-.dv-drop-target { position: absolute; pointer-events: none; z-index: 901; }
-.dv-drop-highlight { position: absolute;
-	background: var(--dv-drop-bg, rgba(80,140,255,.3)); }
-.dv-watermark { display: flex; width: 100%; height: 100%;
-	align-items: center; justify-content: center; opacity: 0.5; }
-.dv-floating { position: absolute; z-index: 100; pointer-events: auto;
-	box-shadow: 0 4px 16px rgba(0,0,0,.5); border: 1px solid var(--dv-floating-border, #444); }
-.dv-resize-handle { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px;
-	cursor: nwse-resize; z-index: 101; background: var(--dv-resize-bg, #555); }
-.dv-error-watermark { display: flex; width: 100%; height: 100%; padding: 16px;
-	align-items: center; justify-content: center; text-align: center; white-space: pre-wrap;
-	color: var(--dv-error-fg, #f77); }
-"#;
 
 // Headless structure/re-render tests over a hand-built split model. Native-only:
 // they drive a `VirtualDom` + `dioxus_ssr::render`, no browser, no wasm.
@@ -236,7 +239,11 @@ mod tests {
 	}
 
 	fn leaf(id: u64, tabs: &[&str]) -> GridNode {
-		GridNode::Leaf(Group { id: GroupId(id), tabs: tabs.iter().map(|s| PanelId((*s).into())).collect(), active: 0 })
+		GridNode::Leaf(Group {
+			id: GroupId(id),
+			tabs: tabs.iter().map(|s| PanelId((*s).into())).collect(),
+			active: 0,
+		})
 	}
 
 	// Branch{H, [ g1{a,b}, Branch{V, [ g2{c}, g3{d} ]} ]}
@@ -247,7 +254,13 @@ mod tests {
 		};
 		let root = GridNode::Branch {
 			orientation: crate::geometry::Orientation::Horizontal,
-			children: vec![Child { node: leaf(1, &["a", "b"]), size: 60.0 }, Child { node: inner, size: 40.0 }],
+			children: vec![
+				Child {
+					node: leaf(1, &["a", "b"]),
+					size: 60.0,
+				},
+				Child { node: inner, size: 40.0 },
+			],
 		};
 		let mut m = DockModel::default();
 		m.grid = Some(root);
@@ -295,7 +308,9 @@ mod tests {
 		let mut sig = HANDLE.with(|h| h.borrow().expect("root mounted"));
 		dom.in_runtime(|| {
 			let mut m = sig.write();
-			let Some(GridNode::Branch { children, .. }) = m.grid.as_mut() else { panic!("root is a branch") };
+			let Some(GridNode::Branch { children, .. }) = m.grid.as_mut() else {
+				panic!("root is a branch")
+			};
 			let GridNode::Leaf(g) = &mut children[0].node else { panic!("first child is g1") };
 			g.active = 1; // Alpha -> Beta
 		});
@@ -331,7 +346,11 @@ mod tests {
 	fn absent_storage_renders_dock() {
 		#[component]
 		fn Root() -> Element {
-			let panels = vec![DockPanel { id: PanelId("a".into()), title: "A".into(), content: rsx! { span { "x" } } }];
+			let panels = vec![DockPanel {
+				id: PanelId("a".into()),
+				title: "A".into(),
+				content: rsx! { span { "x" } },
+			}];
 			rsx! { DockArea { panels, storage_key: None } }
 		}
 		let mut dom = VirtualDom::new(Root);

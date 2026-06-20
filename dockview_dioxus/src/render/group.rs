@@ -115,16 +115,6 @@ pub fn GroupFrame(addr: GroupAddr) -> Element {
 	}
 }
 
-/// In-flight tab press: where it started and whether it has promoted to a drag.
-/// A press under [`DRAG_THRESHOLD`] is a plain activate on `pointerup`.
-#[derive(Clone, Copy)]
-struct TabPress {
-	index: usize,
-	x: f64,
-	y: f64,
-	dragging: bool,
-}
-
 /// The tab strip: one tab per panel in `Group.tabs`, marking the active one. A tab
 /// click activates it; dragging past [`DRAG_THRESHOLD`] promotes to a
 /// [`DragState::Tab`] drag source (the global [`DropOverlay`](super::drop_overlay)
@@ -189,4 +179,13 @@ pub fn TabStrip(addr: GroupAddr) -> Element {
 			}
 		}
 	}
+}
+/// In-flight tab press: where it started and whether it has promoted to a drag.
+/// A press under [`DRAG_THRESHOLD`] is a plain activate on `pointerup`.
+#[derive(Clone, Copy)]
+struct TabPress {
+	index: usize,
+	x: f64,
+	y: f64,
+	dragging: bool,
 }
