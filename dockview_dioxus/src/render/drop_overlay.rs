@@ -59,6 +59,16 @@ pub fn DropOverlay() -> Element {
 			class: "dv-drop-capture",
 			onpointermove: move |e: PointerEvent| {
 				let c = e.client_coordinates();
+				// A floating titlebar move is one gesture: the float follows the cursor while the
+				// hover hit-test below still offers grid zones (release over one re-docks). `offset`
+				// already absorbs the root origin, so `rect.origin = pointer − offset` is correct.
+				if let Some(fm) = drag.read().as_ref().and_then(|s| s.floating_move.clone()) {
+					let mut model = api.model.write();
+					if let Some(fg) = model.floating.get_mut(fm.idx) {
+						fg.rect.x = c.x - fm.offset_x;
+						fg.rect.y = c.y - fm.offset_y;
+					}
+				}
 				let hit = {
 					let model = api.model.read();
 					let boxes = boxes.read();
@@ -143,6 +153,7 @@ mod tests {
 			drag.set(Some(DragState {
 				source: crate::model::dnd::DragSource::Group(GroupId(1)),
 				hover: Some((vec![], Position::Right)),
+				floating_move: None,
 			}));
 		});
 		dom.render_immediate_to_vec();

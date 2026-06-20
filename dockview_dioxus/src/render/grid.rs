@@ -16,18 +16,28 @@ use crate::{
 	api::DockApi,
 	geometry::Orientation,
 	math::Rect,
-	model::{Location, gridview::GridNode, splitview::resize_pair},
+	model::{GroupAddr, Location, gridview::GridNode, splitview::resize_pair},
 };
 
-/// Render the whole grid from the model in context, or a watermark when empty.
-/// (Maximized-leaf-only rendering is Phase 5; we render the full grid for now.)
+/// Render the grid from the model in context, or a watermark when empty. When a leaf is
+/// [maximized](crate::model::DockModel::maximized) only that leaf is rendered (no
+/// splitters), filling the whole area — the tree itself is untouched.
 #[component]
 pub fn GridLayer() -> Element {
 	let api = use_context::<DockApi>();
-	let grid = api.model.read().grid.clone();
-	match grid {
-		None => rsx! { div { class: "dv-watermark", "No panels" } },
-		Some(root) => rsx! { GridNodeView { node: root, location: Vec::new() } },
+	let (grid, maximized) = {
+		let model = api.model.read();
+		(model.grid.clone(), model.maximized.clone())
+	};
+	let Some(root) = grid else {
+		return rsx! { div { class: "dv-watermark", "No panels" } };
+	};
+	match maximized {
+		Some(loc) => {
+			let node = root.at(&loc).expect("maximized location resolves").clone();
+			rsx! { GridNodeView { node, location: loc } }
+		}
+		None => rsx! { GridNodeView { node: root, location: Vec::new() } },
 	}
 }
 
@@ -36,7 +46,7 @@ pub fn GridLayer() -> Element {
 #[component]
 pub fn GridNodeView(node: GridNode, location: Location) -> Element {
 	match node {
-		GridNode::Leaf(_) => rsx! { group::GroupFrame { location } },
+		GridNode::Leaf(_) => rsx! { group::GroupFrame { addr: GroupAddr::Docked(location) } },
 		GridNode::Branch { orientation, children } => {
 			let dir = match orientation {
 				Orientation::Horizontal => "dv-row",

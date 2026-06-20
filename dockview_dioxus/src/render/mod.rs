@@ -56,14 +56,47 @@ impl From<dioxus::html::geometry::PixelsRect> for Rect {
 /// - `storage_key`: `localStorage` key for autosave/restore; `None` disables persistence.
 #[component]
 pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element {
-	let model = use_signal(|| restore_or_default(&panels, storage_key.as_deref()));
+	// Restore branches three ways: absent storage → default layout; present+valid →
+	// restored; present+corrupt → an error watermark (never a silent reset).
+	let initial = use_hook({
+		let storage_key = storage_key.clone();
+		move || restore(storage_key.as_deref().and_then(crate::persist::read).as_deref())
+	});
+	let model = use_signal(|| match &initial {
+		Restore::Loaded(m) => m.clone(),
+		Restore::Default | Restore::Corrupt(_) => default_layout(&panels),
+	});
+	let load_error = match &initial {
+		Restore::Corrupt(e) => Some(e.clone()),
+		_ => None,
+	};
+
 	use_context_provider(|| DockApi { model });
 	use_context_provider(|| Signal::new(HashMap::<GroupId, Rect>::new())); // GroupBoxes
 	use_context_provider(|| Signal::new(None::<DragState>)); // shared drag state for tab/group DnD
 	let mut root_origin: RootOrigin = use_context_provider(|| Signal::new(None));
 	// Stored so `onresize` can re-measure the root's position (ResizeData carries only size).
 	let mut root_handle = use_signal(|| None::<std::rc::Rc<MountedData>>);
-	// Phase 4-5 plug in here: FloatingLayer, DropOverlay, and the persist-on-change `use_effect`.
+
+	// Write-through autosave: re-runs whenever the model changes. localStorage `setItem` of
+	// small JSON is sub-ms, so no debounce — add one only if resize-drag jank shows up.
+	{
+		let storage_key = storage_key.clone();
+		use_effect(move || {
+			let json = crate::model::serial::save(&model.read());
+			if let Some(key) = storage_key.as_deref() {
+				crate::persist::write(key, &json);
+			}
+		});
+	}
+
+	if let Some(message) = load_error {
+		return rsx! {
+			style { dangerous_inner_html: CSS }
+			div { class: "dv-dockview", ErrorWatermark { message } }
+		};
+	}
+
 	rsx! {
 		style { dangerous_inner_html: CSS }
 		div {
@@ -85,23 +118,34 @@ pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element 
 			},
 			grid::GridLayer {}
 			div { class: "dv-overlay", content::ContentLayer { panels: panels.clone() } }
+			floating::FloatingLayer {}
 			drop_overlay::DropOverlay {}
 		}
 	}
 }
 
-/// Build the initial model: restore from storage if present and valid, else a
-/// single-group layout holding every panel as a tab (dockview's "stack unless
-/// positioned" default).
-pub fn restore_or_default(panels: &[DockPanel], storage_key: Option<&str>) -> DockModel {
-	// Loud-error-on-corrupt and autosave are Phase 5; native `persist::read` returns
-	// `None`, so this restore branch is a no-op off-wasm.
-	if let Some(json) = storage_key.and_then(crate::persist::read) {
-		if let Ok(model) = crate::model::serial::load(&json) {
-			return model;
-		}
-	}
+/// Outcome of reading saved layout JSON: nothing stored, a valid layout, or a corrupt
+/// payload (whose message we surface rather than silently discarding the workspace).
+#[derive(Clone)]
+enum Restore {
+	Default,
+	Loaded(DockModel),
+	Corrupt(String),
+}
 
+fn restore(json: Option<&str>) -> Restore {
+	match json {
+		None => Restore::Default,
+		Some(j) => match crate::model::serial::load(j) {
+			Ok(m) => Restore::Loaded(m),
+			Err(e) => Restore::Corrupt(format!("{e:?}")),
+		},
+	}
+}
+
+/// The "stack unless positioned" default: every panel as a tab in one group (dockview's
+/// behavior when `addPanel` is given no position).
+pub fn default_layout(panels: &[DockPanel]) -> DockModel {
 	let mut m = DockModel::default();
 	let mut ids = panels.iter().map(|p| p.id.clone());
 	if let Some(first) = ids.next() {
@@ -118,6 +162,15 @@ pub fn restore_or_default(panels: &[DockPanel], storage_key: Option<&str>) -> Do
 		m.panels.insert(p.id.clone(), PanelMeta { title: p.title.clone() });
 	}
 	m
+}
+
+/// Shown in place of the dock when a saved layout fails to parse — keeps the corrupt
+/// payload visible instead of wiping it.
+#[component]
+fn ErrorWatermark(message: String) -> Element {
+	rsx! {
+		div { class: "dv-error-watermark", "Failed to load saved layout:\n{message}" }
+	}
 }
 
 /// Minimal structural stylesheet. Layout (flex/sizing) ships with the lib; all
@@ -155,6 +208,13 @@ const CSS: &str = r#"
 	background: var(--dv-drop-bg, rgba(80,140,255,.3)); }
 .dv-watermark { display: flex; width: 100%; height: 100%;
 	align-items: center; justify-content: center; opacity: 0.5; }
+.dv-floating { position: absolute; z-index: 100; pointer-events: auto;
+	box-shadow: 0 4px 16px rgba(0,0,0,.5); border: 1px solid var(--dv-floating-border, #444); }
+.dv-resize-handle { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px;
+	cursor: nwse-resize; z-index: 101; background: var(--dv-resize-bg, #555); }
+.dv-error-watermark { display: flex; width: 100%; height: 100%; padding: 16px;
+	align-items: center; justify-content: center; text-align: center; white-space: pre-wrap;
+	color: var(--dv-error-fg, #f77); }
 "#;
 
 // Headless structure/re-render tests over a hand-built split model. Native-only:
@@ -244,5 +304,41 @@ mod tests {
 
 		assert_ne!(before, after, "active-tab change must re-render");
 		assert_eq!(after.matches("dv-active").count(), 3, "still one active tab per group");
+	}
+
+	#[test]
+	fn restore_branches_none_ok_corrupt() {
+		assert!(matches!(restore(None), Restore::Default), "absent storage → default");
+		let json = crate::model::serial::save(&DockModel::default());
+		assert!(matches!(restore(Some(&json)), Restore::Loaded(_)), "valid JSON → loaded");
+		assert!(matches!(restore(Some("not json")), Restore::Corrupt(_)), "garbage → corrupt, never a reset");
+	}
+
+	#[test]
+	fn corrupt_restore_renders_error_watermark() {
+		#[component]
+		fn Root() -> Element {
+			rsx! { ErrorWatermark { message: "boom".to_string() } }
+		}
+		let mut dom = VirtualDom::new(Root);
+		dom.rebuild_in_place();
+		let html = dioxus_ssr::render(&dom);
+		assert!(html.contains("dv-error-watermark"), "watermark shown for a corrupt layout");
+		assert!(html.contains("boom"), "the load error message is carried through");
+	}
+
+	#[test]
+	fn absent_storage_renders_dock() {
+		#[component]
+		fn Root() -> Element {
+			let panels = vec![DockPanel { id: PanelId("a".into()), title: "A".into(), content: rsx! { span { "x" } } }];
+			rsx! { DockArea { panels, storage_key: None } }
+		}
+		let mut dom = VirtualDom::new(Root);
+		dom.rebuild_in_place();
+		let html = dioxus_ssr::render(&dom);
+		assert!(html.contains("dv-group"), "no storage → the default dock renders");
+		// The class name also lives in the CSS `<style>`; the message only renders in the div.
+		assert!(!html.contains("Failed to load saved layout"), "no watermark without a corrupt payload");
 	}
 }

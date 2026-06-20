@@ -5,15 +5,17 @@
 //! the [content overlay](super::content) and positioned over this slot's measured
 //! box. The frame only contributes chrome and that measured box. (insilicoterminal's
 //! `.titlebar` / `.subtitlebar` / `.footerbar` map onto this frame.)
+//!
+//! Frames are addressed by [`GroupAddr`] so a single component renders both docked
+//! leaves and floating groups.
 
 use dioxus::prelude::*;
 
 use crate::{
 	api::DockApi,
 	model::{
-		Location,
-		dnd::{DragSource, DragState},
-		gridview::GridNode,
+		GroupAddr,
+		dnd::{DragSource, DragState, FloatMove},
 	},
 };
 
@@ -21,35 +23,76 @@ use crate::{
 const DRAG_THRESHOLD: f64 = 4.0;
 
 /// One pane: titlebar (active panel's title) + tab strip + an empty content slot.
-/// Static this phase — titlebar drag, maximize/close handlers, the content slot's
-/// measurement `onmounted`, and the 5-zone drop target are Phase 3–4.
+/// The titlebar starts a drag (group move, or a floating-frame move) on press and
+/// toggles maximize on double-click; the slot's `onmounted`/`onresize` feed its box
+/// to the content overlay.
 #[component]
-pub fn GroupFrame(location: Location) -> Element {
-	let api = use_context::<DockApi>();
+pub fn GroupFrame(addr: GroupAddr) -> Element {
+	let mut api = use_context::<DockApi>();
 	let (gid, title) = {
 		let model = api.model.read();
-		let root = model.grid.as_ref().expect("GroupFrame rendered without a grid");
-		let GridNode::Leaf(group) = root.at(&location).expect("GroupFrame: location must resolve") else {
-			panic!("GroupFrame: location must point at a leaf");
-		};
+		let group = model.group(&addr);
 		(group.id, model.panels.get(group.active_panel()).expect("active panel has metadata").title.clone())
 	};
 	let mut boxes = use_context::<super::GroupBoxes>();
 	let mut drag = use_context::<Signal<Option<DragState>>>();
 	// Kept so `onresize` re-measures position (ResizeData carries only size).
 	let mut handle = use_signal(|| None::<std::rc::Rc<MountedData>>);
+
+	// A floating frame moves via its rect (a pure reposition fires no ResizeObserver), so
+	// re-measure the slot whenever this float's rect changes; docked frames no-op here.
+	{
+		let addr = addr.clone();
+		use_effect(move || {
+			let GroupAddr::Floating(idx) = &addr else { return };
+			let _ = api.model.read().floating.get(*idx).map(|fg| fg.rect); // subscribe to the rect
+			if let Some(h) = handle() {
+				spawn(async move {
+					if let Ok(rect) = h.get_client_rect().await {
+						boxes.write().insert(gid, rect.into());
+					}
+				});
+			}
+		});
+	}
+
 	rsx! {
 		div { class: "dv-group",
 			div {
 				class: "dv-titlebar",
-				onpointerdown: move |e: PointerEvent| {
-					if e.trigger_button() == Some(dioxus::html::input_data::MouseButton::Primary) {
-						drag.set(Some(DragState { source: DragSource::Group(gid), hover: None }));
+				onpointerdown: {
+					let addr = addr.clone();
+					move |e: PointerEvent| {
+						if e.trigger_button() != Some(dioxus::html::input_data::MouseButton::Primary) {
+							return;
+						}
+						match &addr {
+							GroupAddr::Docked(_) => drag.set(Some(DragState { source: DragSource::Group(gid), hover: None, floating_move: None })),
+							GroupAddr::Floating(idx) => {
+								let c = e.client_coordinates();
+								let rect = api.model.read().floating[*idx].rect;
+								drag.set(Some(DragState {
+									source: DragSource::Group(gid),
+									hover: None,
+									floating_move: Some(FloatMove { idx: *idx, offset_x: c.x - rect.x, offset_y: c.y - rect.y }),
+								}));
+							}
+						}
+					}
+				},
+				ondoubleclick: {
+					let addr = addr.clone();
+					move |_| {
+						// Maximize is render-only; a floating frame has no grid location to maximize.
+						if let GroupAddr::Docked(loc) = &addr {
+							let mut m = api.model.write();
+							m.maximized = m.maximized.is_none().then(|| loc.clone());
+						}
 					}
 				},
 				"{title}"
 			}
-			TabStrip { location: location.clone() }
+			TabStrip { addr: addr.clone() }
 			div {
 				class: "dv-content-slot",
 				onmounted: move |e| async move {
@@ -85,17 +128,14 @@ struct TabPress {
 /// The tab strip: one tab per panel in `Group.tabs`, marking the active one. A tab
 /// click activates it; dragging past [`DRAG_THRESHOLD`] promotes to a
 /// [`DragState::Tab`] drag source (the global [`DropOverlay`](super::drop_overlay)
-/// then owns the hover/drop).
+/// then owns the hover/drop). Works for docked and floating groups alike.
 #[component]
-pub fn TabStrip(location: Location) -> Element {
+pub fn TabStrip(addr: GroupAddr) -> Element {
 	let mut api = use_context::<DockApi>();
 	let mut drag = use_context::<Signal<Option<DragState>>>();
 	let (gid, tabs, active) = {
 		let model = api.model.read();
-		let root = model.grid.as_ref().expect("TabStrip rendered without a grid");
-		let GridNode::Leaf(group) = root.at(&location).expect("TabStrip: location must resolve") else {
-			panic!("TabStrip: location must point at a leaf");
-		};
+		let group = model.group(&addr);
 		let tabs: Vec<(crate::model::PanelId, String)> = group
 			.tabs
 			.iter()
@@ -128,21 +168,17 @@ pub fn TabStrip(location: Location) -> Element {
 							let c = e.client_coordinates();
 							if (c.x - p.x).abs() > DRAG_THRESHOLD || (c.y - p.y).abs() > DRAG_THRESHOLD {
 								press.set(Some(TabPress { dragging: true, ..p }));
-								drag.set(Some(DragState { source: DragSource::Tab { panel: id.clone(), from_group: gid }, hover: None }));
+								drag.set(Some(DragState { source: DragSource::Tab { panel: id.clone(), from_group: gid }, hover: None, floating_move: None }));
 							}
 						}
 					},
 					onpointerup: {
-						let location = location.clone();
+						let addr = addr.clone();
 						move |_| {
 							// A press that never crossed the threshold is a plain activate.
 							if let Some(p) = press() {
 								if !p.dragging {
-									let mut model = api.model.write();
-									let GridNode::Leaf(group) = model.grid.as_mut().expect("grid").at_mut(&location).expect("TabStrip location resolves") else {
-										panic!("TabStrip: location must point at a leaf");
-									};
-									group.active = i;
+									api.model.write().group_mut(&addr).active = i;
 								}
 							}
 							press.set(None);

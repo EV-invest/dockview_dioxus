@@ -24,6 +24,15 @@ use group::Group;
 
 /// Path of child indices from the grid root to a node (dockview `location: number[]`).
 pub type Location = Vec<usize>;
+
+/// Where a renderable group lives. The grid addresses leaves by [`Location`]; floating
+/// groups have none, so render code that must handle both (frames, tab strips) is keyed
+/// by this instead. Identity stays [`GroupId`] — this only carries *where + kind*.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GroupAddr {
+	Docked(Location),
+	Floating(usize),
+}
 /// Stable identity of a panel (a single widget). Provided by the consumer; used as
 /// the render key that keeps a panel's component instance alive across restructuring.
 #[derive(Clone, Debug, serde::Deserialize, Eq, Hash, PartialEq, serde::Serialize)]
@@ -63,6 +72,31 @@ impl DockModel {
 		let id = GroupId(self.next_group_id);
 		self.next_group_id += 1;
 		id
+	}
+
+	/// Borrow the group at `addr` (docked leaf or floating entry).
+	pub(crate) fn group(&self, addr: &GroupAddr) -> &Group {
+		match addr {
+			GroupAddr::Docked(loc) => {
+				let GridNode::Leaf(g) = self.grid.as_ref().expect("group: docked addr needs a grid").at(loc).expect("group: location resolves") else {
+					panic!("group: docked addr must point at a leaf");
+				};
+				g
+			}
+			GroupAddr::Floating(i) => &self.floating[*i].group,
+		}
+	}
+
+	pub(crate) fn group_mut(&mut self, addr: &GroupAddr) -> &mut Group {
+		match addr {
+			GroupAddr::Docked(loc) => {
+				let GridNode::Leaf(g) = self.grid.as_mut().expect("group_mut: docked addr needs a grid").at_mut(loc).expect("group_mut: location resolves") else {
+					panic!("group_mut: docked addr must point at a leaf");
+				};
+				g
+			}
+			GroupAddr::Floating(i) => &mut self.floating[*i].group,
+		}
 	}
 }
 

@@ -16,11 +16,13 @@ use std::collections::HashMap;
 
 use dioxus::prelude::*;
 
+use std::collections::HashSet;
+
 use super::{GroupBoxes, RootOrigin};
 use crate::{
 	api::DockApi,
 	math::Rect,
-	model::{GroupId, PanelId, dnd::DragState},
+	model::{GroupId, PanelId, dnd::DragState, gridview::GridNode},
 	panel::DockPanel,
 };
 
@@ -32,16 +34,33 @@ pub fn ContentLayer(panels: Vec<DockPanel>) -> Element {
 	let root_origin = use_context::<RootOrigin>();
 	let drag = use_context::<Signal<Option<DragState>>>();
 
-	// PanelId -> (hosting group, is its active tab), from the docked grid only.
+	// PanelId -> (hosting group, is its active tab). Built from the docked grid (only the
+	// maximized leaf when one is maximized) plus every floating group, which always shows.
+	// `floating_ids` lifts floating panels above docked ones in the single overlay layer.
+	let mut floating_ids: HashSet<GroupId> = HashSet::new();
 	let host: HashMap<PanelId, (GroupId, bool)> = {
 		let model = api.model.read();
 		let mut map = HashMap::new();
 		if let Some(grid) = model.grid.as_ref() {
-			for (_, group) in grid.leaves() {
+			let leaves = match &model.maximized {
+				Some(loc) => {
+					let GridNode::Leaf(g) = grid.at(loc).expect("maximized location resolves") else { panic!("maximized must be a leaf") };
+					vec![(loc.clone(), g)]
+				}
+				None => grid.leaves(),
+			};
+			for (_, group) in leaves {
 				let active = group.active_panel();
 				for id in &group.tabs {
 					map.insert(id.clone(), (group.id, id == active));
 				}
+			}
+		}
+		for fg in &model.floating {
+			floating_ids.insert(fg.group.id);
+			let active = fg.group.active_panel();
+			for id in &fg.group.tabs {
+				map.insert(id.clone(), (fg.group.id, id == active));
 			}
 		}
 		map
@@ -57,7 +76,7 @@ pub fn ContentLayer(panels: Vec<DockPanel>) -> Element {
 			div {
 				key: "{panel.id.0}",
 				class,
-				style: slot_style(host.get(&panel.id), &boxes, origin.as_ref()),
+				style: slot_style(host.get(&panel.id), &boxes, origin.as_ref(), &floating_ids),
 				{panel.content.clone()}
 			}
 		}
@@ -67,16 +86,14 @@ pub fn ContentLayer(panels: Vec<DockPanel>) -> Element {
 /// The three visibility states (the panel is always mounted): active-and-measured ⇒
 /// positioned/visible; active-but-unmeasured ⇒ `visibility:hidden` (no 0,0 flash);
 /// inactive or not in the grid ⇒ `display:none`.
-fn slot_style(host: Option<&(GroupId, bool)>, boxes: &HashMap<GroupId, Rect>, origin: Option<&Rect>) -> String {
+fn slot_style(host: Option<&(GroupId, bool)>, boxes: &HashMap<GroupId, Rect>, origin: Option<&Rect>, floating: &HashSet<GroupId>) -> String {
 	match host {
 		Some((gid, true)) => match (boxes.get(gid), origin) {
-			(Some(slot), Some(root)) => format!(
-				"left:{}px; top:{}px; width:{}px; height:{}px;",
-				slot.x - root.x,
-				slot.y - root.y,
-				slot.width,
-				slot.height
-			),
+			(Some(slot), Some(root)) => {
+				// Floating content rides above docked content in this single flat overlay.
+				let z = if floating.contains(gid) { " z-index:50;" } else { "" };
+				format!("left:{}px; top:{}px; width:{}px; height:{}px;{z}", slot.x - root.x, slot.y - root.y, slot.width, slot.height)
+			}
 			_ => "visibility:hidden;".into(),
 		},
 		_ => "display:none;".into(),
@@ -203,11 +220,45 @@ mod tests {
 
 		let mut drag = DRAG.with(|d| d.borrow().expect("mounted"));
 		dom.in_runtime(|| {
-			drag.set(Some(DragState { source: crate::model::dnd::DragSource::Group(GroupId(1)), hover: None }));
+			drag.set(Some(DragState { source: crate::model::dnd::DragSource::Group(GroupId(1)), hover: None, floating_move: None }));
 		});
 		dom.render_immediate_to_vec();
 		let html = dioxus_ssr::render(&dom);
 		assert_eq!(html.matches("dv-dragging").count(), 2, "both wrappers dim during a drag");
+	}
+
+	#[test]
+	fn maximize_hosts_only_that_leaf() {
+		let inner = GridNode::Branch {
+			orientation: crate::geometry::Orientation::Vertical,
+			children: vec![Child { node: leaf(2, &["c"], 0), size: 50.0 }, Child { node: leaf(3, &["d"], 0), size: 50.0 }],
+		};
+		let grid = GridNode::Branch {
+			orientation: crate::geometry::Orientation::Horizontal,
+			children: vec![Child { node: leaf(1, &["a", "b"], 0), size: 60.0 }, Child { node: inner, size: 40.0 }],
+		};
+		let mut m = model_with(grid, &["a", "b", "c", "d"]);
+		m.maximized = Some(vec![0]); // maximize g1{a,b}; the V-branch leaves vanish from the host set.
+		MODEL.with(|x| *x.borrow_mut() = Some(m));
+		IDS.with(|i| *i.borrow_mut() = vec!["a", "b", "c", "d"]);
+		let parts = chunks(&render());
+		assert!(parts[1].contains("visibility:hidden"), "maximized group's active a is hosted");
+		assert!(parts[2].contains("display:none"), "inactive b in the maximized group is hidden");
+		assert!(parts[3].contains("display:none"), "non-maximized c is not hosted");
+		assert!(parts[4].contains("display:none"), "non-maximized d is not hosted");
+	}
+
+	#[test]
+	fn floating_group_panel_is_hosted() {
+		let mut m = model_with(leaf(1, &["a"], 0), &["a", "b"]);
+		m.floating.push(crate::model::FloatingGroup {
+			group: Group { id: GroupId(2), tabs: vec![PanelId("b".into())], active: 0 },
+			rect: Rect::default(),
+		});
+		MODEL.with(|x| *x.borrow_mut() = Some(m));
+		IDS.with(|i| *i.borrow_mut() = vec!["a", "b"]);
+		let parts = chunks(&render());
+		assert!(parts[2].contains("visibility:hidden"), "the floating group's panel b is hosted, not display:none");
 	}
 
 	#[test]

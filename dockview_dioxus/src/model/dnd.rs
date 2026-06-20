@@ -30,6 +30,20 @@ pub struct DragState {
 	pub source: DragSource,
 	/// Currently hovered (group location, zone), if any — drives the overlay.
 	pub hover: Option<(Location, Position)>,
+	/// Set while a *floating* group's titlebar is being dragged: the float follows the
+	/// cursor (one gesture) and a drop over a grid zone re-docks it. `None` for a normal
+	/// tab/group drag out of the grid.
+	pub floating_move: Option<FloatMove>,
+}
+
+/// A floating group's in-flight titlebar move. `offset` is the grab point within the
+/// float (`pointer − rect.origin` at press); it already absorbs the root origin, so the
+/// move just sets `rect.origin = pointer − offset` (see [`crate::render::drop_overlay`]).
+#[derive(Clone, Debug)]
+pub struct FloatMove {
+	pub idx: usize,
+	pub offset_x: f64,
+	pub offset_y: f64,
 }
 
 /// Apply a completed drop: detach `source`, then either tab it into the target
@@ -46,31 +60,42 @@ pub fn apply_drop(model: &mut DockModel, source: DragSource, target: &Location, 
 		GridNode::Branch { .. } => panic!("apply_drop: target must be a leaf group"),
 	};
 
-	let source_loc = match &source {
-		DragSource::Tab { from_group, .. } => grid.locate(*from_group),
-		DragSource::Group(id) => grid.locate(*id),
-	}
-	.expect("apply_drop: source group must exist");
-
-	// The panel(s) being re-homed, captured before the source is touched.
-	let panels: Vec<PanelId> = match &source {
-		DragSource::Tab { panel, .. } => vec![panel.clone()],
-		DragSource::Group(_) => {
-			let GridNode::Leaf(g) = grid.at(&source_loc).expect("source leaf") else { unreachable!() };
-			g.tabs.clone()
-		}
+	let source_id = match &source {
+		DragSource::Tab { from_group, .. } => *from_group,
+		DragSource::Group(id) => *id,
 	};
 
-	// Detach the source, pruning its leaf if it empties.
-	match &source {
-		DragSource::Tab { panel, .. } => {
-			let GridNode::Leaf(g) = model.grid.as_mut().unwrap().at_mut(&source_loc).unwrap() else { unreachable!() };
-			if g.remove_tab(panel) {
+	// Detach the source and capture the panel(s) being re-homed. The source is either a
+	// grid leaf (the original path) or a floating group (re-docking). `grid` borrow ends
+	// at this `locate`, freeing `model` for the mutations below.
+	let panels: Vec<PanelId> = if let Some(source_loc) = grid.locate(source_id) {
+		match &source {
+			DragSource::Tab { panel, .. } => {
+				let GridNode::Leaf(g) = model.grid.as_mut().unwrap().at_mut(&source_loc).unwrap() else { unreachable!() };
+				if g.remove_tab(panel) {
+					prune_leaf(model, &source_loc);
+				}
+				vec![panel.clone()]
+			}
+			DragSource::Group(_) => {
+				let GridNode::Leaf(g) = model.grid.as_ref().unwrap().at(&source_loc).unwrap() else { unreachable!() };
+				let tabs = g.tabs.clone();
 				prune_leaf(model, &source_loc);
+				tabs
 			}
 		}
-		DragSource::Group(_) => prune_leaf(model, &source_loc),
-	}
+	} else {
+		let idx = model.floating.iter().position(|fg| fg.group.id == source_id).expect("apply_drop: source group must be in the grid or floating");
+		match &source {
+			DragSource::Tab { panel, .. } => {
+				if model.floating[idx].group.remove_tab(panel) {
+					model.floating.remove(idx);
+				}
+				vec![panel.clone()]
+			}
+			DragSource::Group(_) => model.floating.remove(idx).group.tabs,
+		}
+	};
 
 	// Re-locate the target by id (its location may have shifted) and re-home the panels.
 	let target_loc = model
@@ -103,7 +128,7 @@ pub fn apply_drop(model: &mut DockModel, source: DragSource, target: &Location, 
 }
 
 /// Remove the leaf at `loc` from the grid; an emptied root collapses the whole grid.
-fn prune_leaf(model: &mut DockModel, loc: &Location) {
+pub(crate) fn prune_leaf(model: &mut DockModel, loc: &Location) {
 	if loc.is_empty() {
 		model.grid = None;
 	} else {
@@ -134,6 +159,9 @@ mod tests {
 	fn model(grid: GridNode, next_group_id: u64) -> DockModel {
 		DockModel { grid: Some(grid), floating: vec![], maximized: None, active_group: None, next_group_id, panels: HashMap::new() }
 	}
+	fn floating(group: Group) -> crate::model::FloatingGroup {
+		crate::model::FloatingGroup { group, rect: crate::math::Rect::default() }
+	}
 
 	#[test]
 	fn centre_drop_tabs_into_target_and_collapses() {
@@ -162,6 +190,38 @@ mod tests {
 		assert_eq!(top.id, GroupId(1));
 		assert_eq!(bottom.tabs, vec![p(2)]);
 		assert_eq!(bottom.id, GroupId(3)); // minted from next_group_id
+	}
+
+	#[test]
+	fn floating_group_redocks_as_tab() {
+		// grid is a single leaf g1{p1}; a floating group g2{p2} re-docks center → tabs into g1.
+		let mut m = model(leaf(1), 3);
+		m.floating.push(floating(Group::new(GroupId(2), p(2))));
+		apply_drop(&mut m, DragSource::Group(GroupId(2)), &vec![], Position::Center);
+		let grid = m.grid.as_ref().unwrap();
+		assert_invariants(grid);
+		assert!(m.floating.is_empty(), "the floating source is consumed");
+		let GridNode::Leaf(g) = grid else { panic!("expected a single leaf") };
+		assert_eq!(g.tabs, vec![p(1), p(2)]);
+	}
+
+	#[test]
+	fn floating_tab_redocks_as_split_and_keeps_remainder() {
+		// floating group g2{p2,p3}; dragging tab p2 onto g1's right edge splits the grid and
+		// leaves p3 behind in the (still-floating) g2.
+		let mut g2 = Group::new(GroupId(2), p(2));
+		g2.insert_tab(p(3), 1);
+		let mut m = model(leaf(1), 3);
+		m.floating.push(floating(g2));
+		apply_drop(&mut m, DragSource::Tab { panel: p(2), from_group: GroupId(2) }, &vec![], Position::Right);
+		let grid = m.grid.as_ref().unwrap();
+		assert_invariants(grid);
+		assert_eq!(m.floating.len(), 1, "g2 survives — it still holds p3");
+		assert_eq!(m.floating[0].group.tabs, vec![p(3)]);
+		let GridNode::Branch { orientation, children } = grid else { panic!("expected a branch") };
+		assert_eq!(*orientation, Orientation::Horizontal);
+		let GridNode::Leaf(right) = &children[1].node else { panic!() };
+		assert_eq!(right.tabs, vec![p(2)]);
 	}
 
 	#[test]
