@@ -46,8 +46,13 @@ const CSS: &str = r#"
 .dv-col > .dv-splitter { cursor: row-resize; }
 .dv-group { display: flex; flex-direction: column; width: 100%; height: 100%;
 	background: var(--dv-group-bg, #1e1e1e); }
-.dv-titlebar { flex: 0 0 auto; padding: 4px 8px; font-weight: 600;
-	background: var(--dv-titlebar-bg, #252526); }
+.dv-titlebar { flex: 0 0 auto; display: flex; align-items: center; padding: 4px 8px;
+	font-weight: 600; background: var(--dv-titlebar-bg, #252526); }
+.dv-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-actions { flex: 0 0 auto; display: flex; gap: 2px; }
+.dv-action { cursor: pointer; border: 0; background: transparent; color: var(--dv-fg, #ddd);
+	opacity: 0.55; padding: 0 5px; font: inherit; line-height: 1; }
+.dv-action:hover { opacity: 1; background: var(--dv-tab-bg, #2d2d2d); }
 .dv-tabstrip { flex: 0 0 auto; display: flex; overflow-x: auto;
 	background: var(--dv-tabstrip-bg, #2d2d2d); }
 .dv-tab { padding: 4px 12px; white-space: nowrap; cursor: pointer;
@@ -299,6 +304,7 @@ mod tests {
 		use_context_provider(|| DockApi { model });
 		use_context_provider(|| Signal::new(HashMap::<GroupId, Rect>::new())); // GroupFrame measures into this
 		use_context_provider(|| Signal::new(None::<DragState>));
+		use_context_provider(|| Signal::new(None::<Rect>)); // RootOrigin, read by GroupFrame's float action
 		HANDLE.with(|h| *h.borrow_mut() = Some(model));
 		rsx! { grid::GridLayer {} }
 	}

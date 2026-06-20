@@ -35,7 +35,9 @@ pub fn GroupFrame(addr: GroupAddr) -> Element {
 		(group.id, model.panels.get(group.active_panel()).expect("active panel has metadata").title.clone())
 	};
 	let mut boxes = use_context::<super::GroupBoxes>();
+	let root_origin = use_context::<super::RootOrigin>();
 	let mut drag = use_context::<Signal<Option<DragState>>>();
+	let is_max = matches!(&addr, GroupAddr::Docked(loc) if api.model.read().maximized.as_ref() == Some(loc));
 	// Kept so `onresize` re-measures position (ResizeData carries only size).
 	let mut handle = use_signal(|| None::<std::rc::Rc<MountedData>>);
 
@@ -90,7 +92,40 @@ pub fn GroupFrame(addr: GroupAddr) -> Element {
 						}
 					}
 				},
-				"{title}"
+				span { class: "dv-title", "{title}" }
+				if let GroupAddr::Docked(loc) = &addr {
+					div {
+						class: "dv-actions",
+						// Keep clicks here from starting a group drag on the titlebar.
+						onpointerdown: |e: PointerEvent| e.stop_propagation(),
+						button {
+							class: "dv-action",
+							title: "Float group",
+							onclick: move |_| {
+								// Float in place: the group's measured box, localized to the dock root.
+								let root = root_origin().unwrap_or_default();
+								let rect = match boxes.read().get(&gid).copied() {
+									Some(b) => crate::math::Rect { x: b.x - root.x, y: b.y - root.y, width: b.width, height: b.height },
+									None => crate::math::Rect { x: 80.0, y: 80.0, width: 320.0, height: 220.0 },
+								};
+								api.float(gid, rect);
+							},
+							"⧉"
+						}
+						button {
+							class: "dv-action",
+							title: if is_max { "Restore" } else { "Maximize" },
+							onclick: {
+								let loc = loc.clone();
+								move |_| {
+									let mut m = api.model.write();
+									m.maximized = (m.maximized.as_ref() != Some(&loc)).then(|| loc.clone());
+								}
+							},
+							if is_max { "⤡" } else { "⤢" }
+						}
+					}
+				}
 			}
 			TabStrip { addr: addr.clone() }
 			div {
