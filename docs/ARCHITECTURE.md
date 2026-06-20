@@ -54,7 +54,10 @@ Edges: `api::DockApi` (scriptable handle over the `Signal`), `panel::DockPanel`
 - The model is the sole source of truth; every interaction is a pure mutation of it.
 - The skeleton never holds user content; content lives **only** in the overlay layer.
 - The content overlay's render order is **independent of layout** — never reorder it,
-  or instances remount and stateful panels (maps, scroll, focus) reset.
+  or instances remount and stateful panels (maps, scroll, focus) reset. Key-stable
+  diffing preserves the instance even when `panel.content` is an *eager VNode* rather
+  than an inline component (Phase-0 verdict, verified against dioxus#4688) — so the
+  `Callback<PanelId, Element>` indirection is **not** needed.
 - `floating` and `maximized` are overlay state **beside** the tree, never tree nodes.
 - A branch's children carry percentages summing to 100; nested branches alternate
   orientation. `normalize` re-establishes both after every mutation.

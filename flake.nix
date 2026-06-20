@@ -18,6 +18,7 @@
         #NB: can't load rust-bin from nightly.latest, as there are week guarantees of which components will be available on each day.
         rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
           extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
+          targets = [ "wasm32-unknown-unknown" ];
         });
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./dockview_dioxus/Cargo.toml).package;
@@ -88,6 +89,9 @@
               openssl
               pkg-config
               rust
+              # nixpkgs dioxus-cli vendors wasm-bindgen 0.2.118 but the crate graph pins =0.2.125;
+              # dx uses the matching external binary if present: `cargo binstall wasm-bindgen-cli@0.2.125`.
+              dioxus-cli
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
 						env.RUST_BACKTRACE = 1;
