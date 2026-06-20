@@ -5,8 +5,6 @@
 //! These are the parts of dockview that are *already* pure logic — they port
 //! almost verbatim and need no DOM.
 
-use crate::math::clamp;
-
 /// Split axis of a branch. `Horizontal` lays children left→right, `Vertical` top→bottom.
 /// (dockview `Orientation`.)
 #[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -53,7 +51,59 @@ impl Position {
 /// pane falls into, given which zones the target accepts. `threshold` is the edge
 /// band as a percentage (dockview default 20). Verbatim port of
 /// `calculateQuadrantAsPercentage`.
-pub fn quadrant_at(_accepted: &[Position], _x: f64, _y: f64, _width: f64, _height: f64, _threshold: f64) -> Option<Position> {
-	let _ = clamp; // keep the dependency wired until the body lands
-	todo!("port calculateQuadrantAsPercentage from droptarget.ts")
+pub fn quadrant_at(accepted: &[Position], x: f64, y: f64, width: f64, height: f64, threshold: f64) -> Option<Position> {
+	let xp = 100.0 * x / width;
+	let yp = 100.0 * y / height;
+
+	if accepted.contains(&Position::Left) && xp < threshold {
+		return Some(Position::Left);
+	}
+	if accepted.contains(&Position::Right) && xp > 100.0 - threshold {
+		return Some(Position::Right);
+	}
+	if accepted.contains(&Position::Top) && yp < threshold {
+		return Some(Position::Top);
+	}
+	if accepted.contains(&Position::Bottom) && yp > 100.0 - threshold {
+		return Some(Position::Bottom);
+	}
+	accepted.contains(&Position::Center).then_some(Position::Center)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	const ALL: &[Position] = &[Position::Top, Position::Bottom, Position::Left, Position::Right, Position::Center];
+
+	#[test]
+	fn dead_centre_is_center() {
+		assert_eq!(quadrant_at(ALL, 50.0, 50.0, 100.0, 100.0, 20.0), Some(Position::Center));
+	}
+
+	#[test]
+	fn edges_resolve_within_band() {
+		assert_eq!(quadrant_at(ALL, 10.0, 50.0, 100.0, 100.0, 20.0), Some(Position::Left));
+		assert_eq!(quadrant_at(ALL, 90.0, 50.0, 100.0, 100.0, 20.0), Some(Position::Right));
+		assert_eq!(quadrant_at(ALL, 50.0, 10.0, 100.0, 100.0, 20.0), Some(Position::Top));
+		assert_eq!(quadrant_at(ALL, 50.0, 90.0, 100.0, 100.0, 20.0), Some(Position::Bottom));
+	}
+
+	#[test]
+	fn just_inside_the_band_falls_to_center() {
+		// xp = 21 > threshold 20 → no left, no other edge → center
+		assert_eq!(quadrant_at(ALL, 21.0, 50.0, 100.0, 100.0, 20.0), Some(Position::Center));
+	}
+
+	#[test]
+	fn unaccepted_center_yields_none() {
+		let edges = &[Position::Left, Position::Right];
+		assert_eq!(quadrant_at(edges, 50.0, 50.0, 100.0, 100.0, 20.0), None);
+	}
+
+	#[test]
+	fn corner_prefers_horizontal_edge() {
+		// left checked before top, matching dockview's order
+		assert_eq!(quadrant_at(ALL, 5.0, 5.0, 100.0, 100.0, 20.0), Some(Position::Left));
+	}
 }

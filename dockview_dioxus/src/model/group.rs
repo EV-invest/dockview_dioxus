@@ -24,18 +24,33 @@ impl Group {
 	}
 
 	/// Add a panel as a tab at `index` and activate it (center-drop / new tab).
-	pub fn insert_tab(&mut self, _panel: PanelId, _index: usize) {
-		todo!("insert tab, set active to it")
+	pub fn insert_tab(&mut self, panel: PanelId, index: usize) {
+		assert!(index <= self.tabs.len(), "insert_tab: index out of range");
+		self.tabs.insert(index, panel);
+		self.active = index;
 	}
 
 	/// Remove `panel`; returns `true` if the group is now empty and should be
 	/// pruned from the tree by the caller.
-	pub fn remove_tab(&mut self, _panel: &PanelId) -> bool {
-		todo!("remove tab, fix up active, report emptiness")
+	pub fn remove_tab(&mut self, panel: &PanelId) -> bool {
+		let pos = self.tabs.iter().position(|p| p == panel).expect("remove_tab: panel not in group");
+		self.tabs.remove(pos);
+		if self.tabs.is_empty() {
+			return true;
+		}
+		// removing at/below the active index shifts it left; then clamp into range.
+		if self.active > pos {
+			self.active -= 1;
+		}
+		self.active = self.active.min(self.tabs.len() - 1);
+		false
 	}
 
 	/// Reorder a tab within the strip (drag within the same header).
-	pub fn move_tab(&mut self, _from: usize, _to: usize) {
-		todo!("reorder tabs, keep active pointing at the same panel")
+	pub fn move_tab(&mut self, from: usize, to: usize) {
+		let active_id = self.tabs[self.active].clone();
+		let panel = self.tabs.remove(from);
+		self.tabs.insert(to, panel);
+		self.active = self.tabs.iter().position(|p| *p == active_id).expect("active panel survives a reorder");
 	}
 }

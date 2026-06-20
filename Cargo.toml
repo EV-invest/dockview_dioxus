@@ -22,6 +22,7 @@ clap = { version = "^4.5.4", features = ["derive"] }
 color-eyre = "^0.6.5"
 derive-new = "^0"
 dioxus = { version = "^0.7" }
+dioxus-ssr = "0.7"
 dockview_dioxus_macros = { path = "dockview_dioxus_macros" }
 miette = { version = "^7.6.0", features = ["fancy", "serde", "syntect-highlighter"] }
 serde = { version = "^1", features = ["derive"] }
