@@ -10,12 +10,28 @@ fn main() {
 
 fn app() -> Element {
 	let panels = vec![
-		DockPanel { id: PanelId("editor".into()), title: "Editor".into(), content: rsx! { div { "editor content" } } },
-		DockPanel { id: PanelId("terminal".into()), title: "Terminal".into(), content: rsx! { div { "terminal content" } } },
-		DockPanel { id: PanelId("explorer".into()), title: "Explorer".into(), content: rsx! { Controls {} } },
+		DockPanel {
+			id: PanelId("editor".into()),
+			title: "Editor".into(),
+			content: rsx! { div { "editor content" } },
+		},
+		DockPanel {
+			id: PanelId("terminal".into()),
+			title: "Terminal".into(),
+			content: rsx! { div { "terminal content" } },
+		},
+		DockPanel {
+			id: PanelId("explorer".into()),
+			title: "Explorer".into(),
+			content: rsx! { Controls {} },
+		},
 	];
 	rsx! {
-		DockArea { panels, storage_key: Some("dockview-basic".to_string()) }
+		// The dock fills its parent (height:100%); pin a full-viewport host so it has a real
+		// size to measure against (otherwise height:100% collapses to 0 and nothing shows).
+		div { style: "position:fixed; inset:0; background:#1e1e1e;",
+			DockArea { panels, storage_key: Some("dockview-basic".to_string()) }
+		}
 	}
 }
 
