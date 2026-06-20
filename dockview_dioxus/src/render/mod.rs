@@ -25,15 +25,27 @@ use dioxus::prelude::*;
 use crate::{
 	api::DockApi,
 	math::Rect,
-	model::{DockModel, GroupId, PanelMeta, group::Group, gridview::GridNode},
+	model::{DockModel, GroupId, PanelMeta, dnd::DragState, group::Group, gridview::GridNode},
 	panel::DockPanel,
 };
 
-/// Measured pixel box of each group's content slot, in container-local coords.
-/// Group frames write theirs via `onmounted`/resize; the content overlay reads it to
-/// position panels. This is the one place we re-introduce measurement — exactly what
-/// dockview's `OverlayRenderContainer` does (`getDomNodePagePosition` + rAF).
+/// Measured pixel box of each group's content slot, in **raw viewport** coords.
+/// Group frames write theirs via `onmounted`/`onresize`; the content overlay localizes
+/// them (`slot - root`, see [`RootOrigin`]) before positioning panels. Storing raw (not
+/// container-local) is scroll/translation-robust — overlay and slots share the root's
+/// frame, so a scroll or window move shifts both equally. This is the one place we
+/// re-introduce measurement — dockview's `OverlayRenderContainer` (`box - box2`).
 pub type GroupBoxes = Signal<HashMap<GroupId, Rect>>;
+
+/// The dock-root div's own viewport rect, measured by [`DockArea`]. The overlay
+/// subtracts its origin from each raw slot box to get container-local left/top.
+pub type RootOrigin = Signal<Option<Rect>>;
+
+impl From<dioxus::html::geometry::PixelsRect> for Rect {
+	fn from(r: dioxus::html::geometry::PixelsRect) -> Self {
+		Rect { x: r.origin.x, y: r.origin.y, width: r.size.width, height: r.size.height }
+	}
+}
 
 /// Root component. Owns the `Signal<DockModel>`, provides [`DockApi`](crate::api::DockApi)
 /// + [`GroupBoxes`] via context, restores any saved layout, and stacks the three render
@@ -46,11 +58,35 @@ pub type GroupBoxes = Signal<HashMap<GroupId, Rect>>;
 pub fn DockArea(panels: Vec<DockPanel>, storage_key: Option<String>) -> Element {
 	let model = use_signal(|| restore_or_default(&panels, storage_key.as_deref()));
 	use_context_provider(|| DockApi { model });
-	// Phase 3-5 plug in here: GroupBoxes provider + ContentLayer (content overlay),
-	// FloatingLayer, DropOverlay, and the persist-on-change `use_effect`.
+	use_context_provider(|| Signal::new(HashMap::<GroupId, Rect>::new())); // GroupBoxes
+	use_context_provider(|| Signal::new(None::<DragState>)); // shared drag state for tab/group DnD
+	let mut root_origin: RootOrigin = use_context_provider(|| Signal::new(None));
+	// Stored so `onresize` can re-measure the root's position (ResizeData carries only size).
+	let mut root_handle = use_signal(|| None::<std::rc::Rc<MountedData>>);
+	// Phase 4-5 plug in here: FloatingLayer, DropOverlay, and the persist-on-change `use_effect`.
 	rsx! {
 		style { dangerous_inner_html: CSS }
-		div { class: "dv-dockview", grid::GridLayer {} }
+		div {
+			class: "dv-dockview",
+			onmounted: move |e| async move {
+				let h = e.data();
+				root_handle.set(Some(h.clone()));
+				// Errs server-side / pre-hydration; overlay stays hidden until a real measure lands.
+				if let Ok(rect) = h.get_client_rect().await {
+					root_origin.set(Some(rect.into()));
+				}
+			},
+			onresize: move |_| async move {
+				if let Some(h) = root_handle() {
+					if let Ok(rect) = h.get_client_rect().await {
+						root_origin.set(Some(rect.into()));
+					}
+				}
+			},
+			grid::GridLayer {}
+			div { class: "dv-overlay", content::ContentLayer { panels: panels.clone() } }
+			drop_overlay::DropOverlay {}
+		}
 	}
 }
 
@@ -110,6 +146,13 @@ const CSS: &str = r#"
 .dv-tab.dv-active { background: var(--dv-tab-active-bg, #1e1e1e);
 	color: var(--dv-tab-active-fg, #fff); }
 .dv-content-slot { flex: 1 1 auto; overflow: hidden; }
+.dv-overlay { position: absolute; inset: 0; pointer-events: none; }
+.dv-render-overlay { position: absolute; overflow: hidden; pointer-events: auto; }
+.dv-render-overlay.dv-dragging { pointer-events: none; }
+.dv-drop-capture { position: fixed; inset: 0; z-index: 900; }
+.dv-drop-target { position: absolute; pointer-events: none; z-index: 901; }
+.dv-drop-highlight { position: absolute;
+	background: var(--dv-drop-bg, rgba(80,140,255,.3)); }
 .dv-watermark { display: flex; width: 100%; height: 100%;
 	align-items: center; justify-content: center; opacity: 0.5; }
 "#;
@@ -159,6 +202,8 @@ mod tests {
 	fn TestRoot() -> Element {
 		let model = use_signal(split_model);
 		use_context_provider(|| DockApi { model });
+		use_context_provider(|| Signal::new(HashMap::<GroupId, Rect>::new())); // GroupFrame measures into this
+		use_context_provider(|| Signal::new(None::<DragState>));
 		HANDLE.with(|h| *h.borrow_mut() = Some(model));
 		rsx! { grid::GridLayer {} }
 	}

@@ -7,13 +7,16 @@
 //! `div { display:flex; flex-direction: row|column }`, each child a
 //! `div { flex-basis: {size}%; min-*: … }`. Browser does the pixel layout.
 
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 
 use super::group;
 use crate::{
 	api::DockApi,
 	geometry::Orientation,
-	model::{Location, gridview::GridNode},
+	math::Rect,
+	model::{Location, gridview::GridNode, splitview::resize_pair},
 };
 
 /// Render the whole grid from the model in context, or a watermark when empty.
@@ -39,13 +42,17 @@ pub fn GridNodeView(node: GridNode, location: Location) -> Element {
 				Orientation::Horizontal => "dv-row",
 				Orientation::Vertical => "dv-col",
 			};
-			// Interleave children with a static splitter gutter between each pair. The
-			// interactive `Splitter` (drag -> resize_pair) lands in Phase 4. Keys are by
+			// The branch div's measured rect gives the splitters their parent-axis px.
+			let mut branch_handle = use_signal(|| None::<Rc<MountedData>>);
+			// Interleave children with a draggable splitter gutter between each pair. The
+			// gutter before child `i` resizes the pair `i-1`/`i`. Keys are by
 			// first-descendant group id — cosmetic; skeleton remount is harmless.
 			let mut items: Vec<Element> = Vec::new();
 			for (i, child) in children.into_iter().enumerate() {
 				if i > 0 {
-					items.push(rsx! { div { key: "splitter-{i}", class: "dv-splitter" } });
+					items.push(rsx! {
+						Splitter { key: "splitter-{i}", parent: location.clone(), index: i - 1, orientation, branch_handle }
+					});
 				}
 				let mut loc = location.clone();
 				loc.push(i);
@@ -59,9 +66,31 @@ pub fn GridNodeView(node: GridNode, location: Location) -> Element {
 					}
 				});
 			}
-			rsx! { div { class: "dv-branch {dir}", {items.into_iter()} } }
+			rsx! {
+				div {
+					class: "dv-branch {dir}",
+					onmounted: move |e| branch_handle.set(Some(e.data())),
+					{items.into_iter()}
+				}
+			}
 		}
 	}
+}
+
+/// In-flight resize captured at `pointerdown`: absolute-from-start (not incremental)
+/// to avoid clamp drift. Each `pointermove` resets the pair to `start_sizes` then
+/// applies `resize_pair` with the cumulative delta.
+#[derive(Clone)]
+struct ResizeDrag {
+	parent: Location,
+	index: usize,
+	orientation: Orientation,
+	/// Pointer coord along the split axis at `pointerdown`.
+	start_px: f64,
+	/// Parent branch size along the split axis (px), for delta→percent conversion.
+	axis_px: f64,
+	/// The two siblings' percentages at `pointerdown`.
+	start_sizes: [f64; 2],
 }
 
 /// The draggable divider between children `index` and `index+1` of the branch at
@@ -73,6 +102,67 @@ pub fn GridNodeView(node: GridNode, location: Location) -> Element {
 /// for the drag's duration, converting pointer delta against the parent's measured
 /// rect into a percentage delta. Same approach the content overlay uses for boxes.
 #[component]
-pub fn Splitter(parent: Location, index: usize) -> Element {
-	todo!("pointerdown -> drag overlay -> resize_pair on move -> commit on up")
+pub fn Splitter(parent: Location, index: usize, orientation: Orientation, branch_handle: Signal<Option<Rc<MountedData>>>) -> Element {
+	let mut api = use_context::<DockApi>();
+	let mut drag = use_signal(|| None::<ResizeDrag>);
+	let cursor = match orientation {
+		Orientation::Horizontal => "col-resize",
+		Orientation::Vertical => "row-resize",
+	};
+	rsx! {
+		div {
+			class: "dv-splitter",
+			onpointerdown: move |e: PointerEvent| {
+				let parent = parent.clone();
+				async move {
+				if e.trigger_button() != Some(dioxus::html::input_data::MouseButton::Primary) {
+					return;
+				}
+				let Some(h) = branch_handle() else { return };
+				let Ok(rect) = h.get_client_rect().await else { return };
+				let rect: Rect = rect.into();
+				let c = e.client_coordinates();
+				let (axis_px, start_px) = match orientation {
+					Orientation::Horizontal => (rect.width, c.x),
+					Orientation::Vertical => (rect.height, c.y),
+				};
+				let start_sizes = {
+					let model = api.model.read();
+					let GridNode::Branch { children, .. } = model.grid.as_ref().expect("grid").at(&parent).expect("splitter parent resolves") else {
+						panic!("splitter parent must be a branch");
+					};
+					[children[index].size, children[index + 1].size]
+				};
+				drag.set(Some(ResizeDrag { parent, index, orientation, start_px, axis_px, start_sizes }));
+				}
+			},
+		}
+		if drag().is_some() {
+			div {
+				style: "position:fixed; inset:0; z-index:1000; cursor:{cursor};",
+				onpointermove: move |e: PointerEvent| {
+					let Some(d) = drag() else { return };
+					let c = e.client_coordinates();
+					let cur = match d.orientation {
+						Orientation::Horizontal => c.x,
+						Orientation::Vertical => c.y,
+					};
+					let delta_pct = (cur - d.start_px) / d.axis_px * 100.0;
+					let mut model = api.model.write();
+					let GridNode::Branch { children, .. } = model.grid.as_mut().expect("grid").at_mut(&d.parent).expect("splitter parent resolves") else {
+						panic!("splitter parent must be a branch");
+					};
+					let mut sizes: Vec<f64> = children.iter().map(|c| c.size).collect();
+					sizes[d.index] = d.start_sizes[0];
+					sizes[d.index + 1] = d.start_sizes[1];
+					resize_pair(&mut sizes, d.index, delta_pct);
+					for (child, s) in children.iter_mut().zip(&sizes) {
+						child.size = *s;
+					}
+				},
+				onpointerup: move |_| drag.set(None),
+				onpointercancel: move |_| drag.set(None),
+			}
+		}
+	}
 }

@@ -1,8 +1,8 @@
 //! Pure scalar/geometry primitives. Port of `dockview-core/src/math.ts` + the
 //! `Box`/`Rect` shapes used by the gridview and overlay layers.
 
-/// Pixel rectangle in container-local coordinates — what the content overlay
-/// layer positions each panel by (dockview's `getDomNodePagePosition` result).
+/// A pixel rectangle (dockview's `getDomNodePagePosition` result). Measured slot/root
+/// boxes are stored raw (viewport); the content overlay localizes them at render time.
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize, PartialEq, serde::Serialize)]
 pub struct Rect {
 	pub x: f64,
