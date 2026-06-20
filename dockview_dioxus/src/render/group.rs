@@ -8,23 +8,61 @@
 
 use dioxus::prelude::*;
 
-use crate::model::Location;
+use crate::{
+	api::DockApi,
+	model::{Location, gridview::GridNode},
+};
 
-/// One pane: drag-handle titlebar, the tab strip, the (empty, measured) content slot,
-/// and the 5-zone drop target that wraps it.
+/// One pane: titlebar (active panel's title) + tab strip + an empty content slot.
+/// Static this phase — titlebar drag, maximize/close handlers, the content slot's
+/// measurement `onmounted`, and the 5-zone drop target are Phase 3–4.
 #[component]
 pub fn GroupFrame(location: Location) -> Element {
-	// - read the Group at `location` from the model
-	// - titlebar: pointerdown starts a Group drag (DragSource::Group); maximize/close buttons
-	// - TabStrip { location }
-	// - content slot: div with `onmounted` + resize observer writing its Rect into GroupBoxes
-	// - DropTarget overlay computing Position via geometry::quadrant_at, feeding DragState.hover
-	todo!("render titlebar (drag/maximize/close), TabStrip, measured empty content slot, drop target")
+	let api = use_context::<DockApi>();
+	let title = {
+		let model = api.model.read();
+		let root = model.grid.as_ref().expect("GroupFrame rendered without a grid");
+		let GridNode::Leaf(group) = root.at(&location).expect("GroupFrame: location must resolve") else {
+			panic!("GroupFrame: location must point at a leaf");
+		};
+		model.panels.get(group.active_panel()).expect("active panel has metadata").title.clone()
+	};
+	rsx! {
+		div { class: "dv-group",
+			div { class: "dv-titlebar", "{title}" }
+			TabStrip { location: location.clone() }
+			div { class: "dv-content-slot" }
+		}
+	}
 }
 
-/// The tab strip. Each tab: click to activate, pointerdown to start a `Tab` drag,
-/// drag-within to reorder. Port of `tabGroup.ts`.
+/// The tab strip: one tab per panel in `Group.tabs`, marking the active one. Static —
+/// click-to-activate and tab drag are Phase 4.
 #[component]
 pub fn TabStrip(location: Location) -> Element {
-	todo!("render tabs from Group.tabs; activate on click; start Tab drag on pointerdown")
+	let api = use_context::<DockApi>();
+	let (titles, active) = {
+		let model = api.model.read();
+		let root = model.grid.as_ref().expect("TabStrip rendered without a grid");
+		let GridNode::Leaf(group) = root.at(&location).expect("TabStrip: location must resolve") else {
+			panic!("TabStrip: location must point at a leaf");
+		};
+		let titles: Vec<(String, String)> = group
+			.tabs
+			.iter()
+			.map(|id| (id.0.clone(), model.panels.get(id).expect("tab panel has metadata").title.clone()))
+			.collect();
+		(titles, group.active)
+	};
+	rsx! {
+		div { class: "dv-tabstrip",
+			for (i, (id, title)) in titles.iter().enumerate() {
+				div {
+					key: "{id}",
+					class: if i == active { "dv-tab dv-active" } else { "dv-tab" },
+					"{title}"
+				}
+			}
+		}
+	}
 }

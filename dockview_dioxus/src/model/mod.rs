@@ -44,7 +44,7 @@ pub struct FloatingGroup {
 
 /// The complete layout state. One of these lives in a `Signal`; everything renders
 /// from it and every interaction is a pure mutation of it.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct DockModel {
 	/// The docked split-tree. `None` only while empty (dockview shows a watermark).
 	pub grid: Option<GridNode>,
