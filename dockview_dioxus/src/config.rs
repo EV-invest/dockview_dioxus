@@ -1,36 +1,36 @@
 //! Host-supplied configuration for [`PackedArea`](crate::render::packed::PackedArea).
-//! Today just keybinds; passed once as a prop. Matched on physical `code` + modifiers, so a
-//! dead-key (`Alt` on some layouts mangling `key()`) can't break a bind.
+//! Today just keybinds; passed once as a prop. Binds match the **produced character**
+//! (`KeyboardEvent.key()`), so they follow the user's keyboard layout instead of a hardcoded
+//! QWERTY physical position.
 
-use dioxus::prelude::*;
-
-/// A single chord: a physical key plus the modifier set that must be held *exactly*.
+/// A single chord: the character the key produces, plus the non-shift modifiers held. Shift is
+/// already baked into `key` (`"u"` vs `"U"`), so it isn't a separate flag.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Keybind {
-	pub code: Code,
+	/// Matched verbatim against `KeyboardEvent.key()` — e.g. `"u"`, `"U"`, `"Delete"`, `"f"`.
+	pub key: &'static str,
 	pub alt: bool,
-	pub shift: bool,
 	pub ctrl: bool,
 }
 
 impl Keybind {
-	/// Matched against a raw DOM `KeyboardEvent`: `code` is the physical-key string (`"KeyZ"`,
-	/// `"Delete"`), which [`Code`]'s `Display` produces verbatim. Modifiers must match exactly,
-	/// so `Alt+Z` doesn't also fire on `Alt+Shift+Z`.
 	#[cfg(target_arch = "wasm32")]
-	pub(crate) fn matches(&self, code: &str, alt: bool, shift: bool, ctrl: bool) -> bool {
-		self.code.to_string() == code && self.alt == alt && self.shift == shift && self.ctrl == ctrl
+	pub(crate) fn matches(&self, key: &str, alt: bool, ctrl: bool) -> bool {
+		self.key == key && self.alt == alt && self.ctrl == ctrl
 	}
 }
 
-/// Chords acting on the layout / the focused pane. Defaults: `Alt+Z` / `Alt+Shift+Z` for the
-/// undo tree, `Alt+Delete` to close the focused pane, `Alt+F` to toggle maximize on it.
+/// Chords acting on the layout / the focused pane. Defaults: `u` / `U` for the undo tree,
+/// `Delete` to close the focused pane, `f` to toggle maximize on it, `?` for the keybind hint.
+/// They never fire while an editable field is focused (see the listener), so bare letters don't
+/// hijack typing.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Keybinds {
-	pub undo: Keybind = Keybind { code: Code::KeyZ, alt: true, shift: false, ctrl: false },
-	pub redo: Keybind = Keybind { code: Code::KeyZ, alt: true, shift: true, ctrl: false },
-	pub close: Keybind = Keybind { code: Code::Delete, alt: true, shift: false, ctrl: false },
-	pub maximize: Keybind = Keybind { code: Code::KeyF, alt: true, shift: false, ctrl: false },
+	pub undo: Keybind = Keybind { key: "u", alt: false, ctrl: false },
+	pub redo: Keybind = Keybind { key: "U", alt: false, ctrl: false },
+	pub close: Keybind = Keybind { key: "Delete", alt: false, ctrl: false },
+	pub maximize: Keybind = Keybind { key: "f", alt: false, ctrl: false },
+	pub help: Keybind = Keybind { key: "?", alt: false, ctrl: false },
 }
 
 impl Default for Keybinds {

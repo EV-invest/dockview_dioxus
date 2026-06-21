@@ -106,6 +106,8 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	// view toggle (no model mutation) — the focused tile fills the container, the rest are hidden.
 	let focused = use_signal(|| None::<GroupId>);
 	let maximized = use_signal(|| None::<GroupId>);
+	// `?` toggles a small overlay listing the active keybinds.
+	let mut help = use_signal(|| false);
 
 	// Undo history of *solid* layouts: a snapshot is captured (by the effect below) only when the
 	// grid is at rest — no drag in flight, not mid-resize — and differs from the cursor's snapshot.
@@ -127,38 +129,33 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 					return;
 				}
 			}
-			let (mut grid, mut undo, mut focused, mut maximized, mut api) = (grid, undo, focused, maximized, api);
+			let (mut grid, mut undo, mut focused, mut maximized, mut help) = (grid, undo, focused, maximized, help);
+			let mut api = api;
 			let kb = cfg.keybinds;
-			let (code, alt, shift, ctrl) = (e.code(), e.alt_key(), e.shift_key(), e.ctrl_key());
-			//dbg
-			let dbg = if kb.undo.matches(&code, alt, shift, ctrl) {
-				"undo"
-			} else if kb.redo.matches(&code, alt, shift, ctrl) {
-				"redo"
-			} else if kb.close.matches(&code, alt, shift, ctrl) {
-				"close"
-			} else if kb.maximize.matches(&code, alt, shift, ctrl) {
-				"maximize"
-			} else {
-				""
-			};
-			if !dbg.is_empty() {
-				web_sys::window()
-					.expect("window")
-					.alert_with_message(&format!("dv heard: {dbg} (code={code}, focused={:?})", focused()))
-					.expect("alert");
+			// `key` is the produced character (layout-aware), not the physical position; shift is
+			// already baked into it (`"u"` vs `"U"`), so `matches` only checks alt/ctrl.
+			let (key, alt, ctrl) = (e.key(), e.alt_key(), e.ctrl_key());
+			//dbg — reveal the produced string for non-text keys, to confirm what "Delete" sends.
+			if key.chars().count() > 1 && !matches!(key.as_str(), "Shift" | "Control" | "Alt" | "Meta") {
+				web_sys::window().expect("window").alert_with_message(&format!("dv key string = {key:?}")).expect("alert");
 			}
-			if kb.undo.matches(&code, alt, shift, ctrl) {
+			// Esc always dismisses the hint, regardless of the configured binds.
+			if help() && key == "Escape" {
+				e.prevent_default();
+				help.set(false);
+				return;
+			}
+			if kb.undo.matches(&key, alt, ctrl) {
 				e.prevent_default();
 				if let Some(g) = undo.write().step(-1) {
 					*grid.write() = g;
 				}
-			} else if kb.redo.matches(&code, alt, shift, ctrl) {
+			} else if kb.redo.matches(&key, alt, ctrl) {
 				e.prevent_default();
 				if let Some(g) = undo.write().step(1) {
 					*grid.write() = g;
 				}
-			} else if kb.close.matches(&code, alt, shift, ctrl) {
+			} else if kb.close.matches(&key, alt, ctrl) {
 				if let Some(g) = focused() {
 					e.prevent_default();
 					api.close_active(g);
@@ -170,12 +167,15 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 						}
 					}
 				}
-			} else if kb.maximize.matches(&code, alt, shift, ctrl) {
+			} else if kb.maximize.matches(&key, alt, ctrl) {
 				let f = focused();
 				if f.is_some() {
 					e.prevent_default();
 					maximized.set(if maximized() == f { None } else { f });
 				}
+			} else if kb.help.matches(&key, alt, ctrl) {
+				e.prevent_default();
+				help.set(!help());
 			}
 		});
 		let window = web_sys::window().expect("a browser window");
@@ -266,6 +266,16 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	});
 
 	let ids: Vec<u64> = view.read().cells.iter().map(|c| c.group.id.0).collect();
+	let help_rows: Vec<(&str, String)> = [
+		("Undo", cfg.keybinds.undo),
+		("Redo", cfg.keybinds.redo),
+		("Close pane", cfg.keybinds.close),
+		("Maximize pane", cfg.keybinds.maximize),
+		("Toggle this hint", cfg.keybinds.help),
+	]
+	.into_iter()
+	.map(|(label, b)| (label, format!("{}{}{}", if b.ctrl { "Ctrl+" } else { "" }, if b.alt { "Alt+" } else { "" }, b.key)))
+	.collect();
 	rsx! {
 		style { dangerous_inner_html: CSS }
 		div {
@@ -347,6 +357,20 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			if let Some((title, left, top, gw, gh)) = ghost {
 				div { class: "dv-ghost", style: "left:{left}px; top:{top}px; width:{gw}px; height:{gh}px;",
 					div { class: "dv-header", div { class: "dv-tab dv-active", "{title}" } }
+				}
+			}
+			if help() {
+				div { class: "dv-help-scrim", onclick: move |_| help.set(false),
+					div { class: "dv-help",
+						div { class: "dv-help-title", "Keybinds" }
+						for (label , chord) in help_rows.iter() {
+							div { class: "dv-help-row",
+								span { class: "dv-help-label", "{label}" }
+								span { class: "dv-help-key", "{chord}" }
+							}
+						}
+						div { class: "dv-help-foot", "click anywhere or press ? to close" }
+					}
 				}
 			}
 		}

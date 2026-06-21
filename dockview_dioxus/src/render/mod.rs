@@ -53,6 +53,17 @@ pub(crate) const CSS: &str = r#"
 	background: var(--dv-group-bg, #1e1e1e); border: 1px solid var(--dv-accent, #63e9cd);
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 .dv-tab-drop { box-shadow: inset 0 0 0 2px var(--dv-accent, #63e9cd); }
+/* `?` hint: a dim scrim over the whole root with a centered card listing the active binds. */
+.dv-help-scrim { position: absolute; inset: 0; z-index: 1100; display: flex; align-items: center;
+	justify-content: center; background: rgba(0, 0, 0, 0.45); cursor: pointer; }
+.dv-help { min-width: 240px; padding: 14px 18px; background: var(--dv-group-bg, #1e1e1e);
+	border: 1px solid var(--dv-accent, #63e9cd); border-radius: 6px; cursor: default;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); }
+.dv-help-title { font-weight: 600; margin-bottom: 8px; }
+.dv-help-row { display: flex; justify-content: space-between; gap: 24px; padding: 3px 0; }
+.dv-help-key { font-family: ui-monospace, monospace; background: var(--dv-tab-bg, #2d2d2d);
+	padding: 0 6px; border-radius: 3px; color: var(--dv-tab-active-fg, #fff); }
+.dv-help-foot { margin-top: 10px; opacity: 0.5; font-size: 11px; }
 "#;
 
 impl From<dioxus::html::geometry::PixelsRect> for Rect {
