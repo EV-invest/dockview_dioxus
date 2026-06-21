@@ -184,8 +184,10 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			}
 		});
 		let window = web_sys::window().expect("a browser window");
+		// Capture phase: fire before any descendant (Google Maps, Plotly, …) can `stopPropagation`
+		// a keydown on its way up to `window`, which would otherwise silence every bind.
 		window
-			.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref())
+			.add_event_listener_with_callback_and_bool("keydown", handler.as_ref().unchecked_ref(), true)
 			.expect("add keydown listener");
 		handler.forget();
 	});
