@@ -2,6 +2,13 @@
 name = "dockview_dioxus"
 version = "0.1.0"
 edition = "2024"
+description = "A tiling/docking layout for Dioxus — panes split, resize, tab, float, and maximize, with the arrangement saved to JSON and restored on reload."
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/dockview_dioxus"
+documentation = "https://docs.rs/dockview_dioxus"
+readme = "../README.md"
+keywords = ["dioxus", "layout", "docking", "tiling", "wasm"]
+categories = ["gui", "wasm"]
 
 # A packed-grid tiling layout library for Dioxus. Web-only (DOM-backed).
 [lib]
