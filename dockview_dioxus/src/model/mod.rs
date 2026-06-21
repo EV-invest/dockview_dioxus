@@ -19,8 +19,11 @@ pub mod splitview;
 
 use std::collections::HashMap;
 
-use gridview::GridNode;
-use group::Group;
+pub use dnd::DragSource;
+pub use gridview::{Child, GridNode};
+pub use group::Group;
+
+use crate::{geometry::Position, math::Rect};
 
 /// Path of child indices from the grid root to a node (dockview `location: number[]`).
 pub type Location = Vec<usize>;
@@ -45,7 +48,7 @@ pub struct GroupId(pub u64);
 /// A detached, absolutely-positioned group floating above the grid. Floating and
 /// [`maximized`](DockModel::maximized) are overlay state *beside* the tree, never
 /// nodes within it — matching dockview (`floatingGroupService`, gridview maximize).
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
 pub struct FloatingGroup {
 	pub group: Group,
 	pub rect: crate::math::Rect,
@@ -53,7 +56,7 @@ pub struct FloatingGroup {
 
 /// The complete layout state. One of these lives in a `Signal`; everything renders
 /// from it and every interaction is a pure mutation of it.
-#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize, PartialEq, serde::Serialize)]
 pub struct DockModel {
 	/// The docked split-tree. `None` only while empty (dockview shows a watermark).
 	pub grid: Option<GridNode>,
@@ -90,7 +93,13 @@ impl DockModel {
 	pub(crate) fn group_mut(&mut self, addr: &GroupAddr) -> &mut Group {
 		match addr {
 			GroupAddr::Docked(loc) => {
-				let GridNode::Leaf(g) = self.grid.as_mut().expect("group_mut: docked addr needs a grid").at_mut(loc).expect("group_mut: location resolves") else {
+				let GridNode::Leaf(g) = self
+					.grid
+					.as_mut()
+					.expect("group_mut: docked addr needs a grid")
+					.at_mut(loc)
+					.expect("group_mut: location resolves")
+				else {
 					panic!("group_mut: docked addr must point at a leaf");
 				};
 				g
@@ -98,10 +107,108 @@ impl DockModel {
 			GroupAddr::Floating(i) => &mut self.floating[*i].group,
 		}
 	}
+
+	/// Dock a panel relative to an existing group (or as the first panel when the grid is
+	/// empty). Core entry point — `DockviewApi.addPanel`.
+	pub fn add_panel(&mut self, panel: PanelId, title: String, target: Option<(Location, Position)>) {
+		self.panels.insert(panel.clone(), PanelMeta { title });
+
+		if self.grid.is_none() {
+			let gid = self.mint_group_id();
+			self.grid = Some(GridNode::Leaf(Group::new(gid, panel)));
+			self.active_group = Some(gid);
+			return;
+		}
+
+		match target {
+			Some((loc, Position::Center)) => {
+				let g = self.group_mut(&GroupAddr::Docked(loc));
+				let idx = g.tabs.len();
+				g.insert_tab(panel, idx);
+			}
+			Some((loc, edge)) => {
+				let gid = self.mint_group_id();
+				gridview::insert_split(self.grid.as_mut().unwrap(), &loc, edge, Group::new(gid, panel));
+				self.maximized = None; // the split shifts locations, staling any maximized one.
+			}
+			None => {
+				// Tab into the active group, or the first leaf if there is none.
+				let loc = self
+					.active_group
+					.and_then(|gid| self.grid.as_ref().unwrap().locate(gid))
+					.or_else(|| self.grid.as_ref().unwrap().leaves().first().map(|(l, _)| l.clone()))
+					.expect("add_panel: a non-empty grid has at least one leaf");
+				let g = self.group_mut(&GroupAddr::Docked(loc));
+				let idx = g.tabs.len();
+				g.insert_tab(panel, idx);
+			}
+		}
+	}
+
+	pub fn move_panel(&mut self, panel: PanelId, target: Location, position: Position) {
+		let from_group = self
+			.grid
+			.as_ref()
+			.expect("move_panel: needs a grid")
+			.leaves()
+			.into_iter()
+			.find(|(_, g)| g.tabs.contains(&panel))
+			.map(|(_, g)| g.id)
+			.expect("move_panel: panel must already be docked");
+		dnd::apply_drop(self, DragSource::Tab { panel, from_group }, &target, position);
+	}
+
+	pub fn remove_panel(&mut self, panel: PanelId) {
+		let (loc, gid) = self
+			.grid
+			.as_ref()
+			.expect("remove_panel: needs a grid")
+			.leaves()
+			.into_iter()
+			.find(|(_, g)| g.tabs.contains(&panel))
+			.map(|(l, g)| (l, g.id))
+			.expect("remove_panel: panel must be docked");
+		let GridNode::Leaf(g) = self.grid.as_mut().unwrap().at_mut(&loc).unwrap() else {
+			unreachable!()
+		};
+		if g.remove_tab(&panel) {
+			dnd::prune_leaf(self, &loc);
+			if self.active_group == Some(gid) {
+				self.active_group = self.grid.as_ref().and_then(|grid| grid.leaves().first().map(|(_, g)| g.id));
+			}
+		}
+		if let Some(grid) = self.grid.as_mut() {
+			gridview::normalize(grid);
+		}
+		self.maximized = None; // a remove reshapes the tree, staling any maximized location.
+		self.panels.remove(&panel);
+	}
+
+	pub fn maximize(&mut self, group: GroupId) {
+		self.maximized = self.grid.as_ref().and_then(|grid| grid.locate(group));
+	}
+
+	pub fn exit_maximized(&mut self) {
+		self.maximized = None;
+	}
+
+	pub fn float(&mut self, group: GroupId, rect: Rect) {
+		let loc = self.grid.as_ref().expect("float: needs a grid").locate(group).expect("float: group must be docked");
+		let GridNode::Leaf(g) = self.grid.as_ref().unwrap().at(&loc).unwrap() else {
+			panic!("float: a group is always a leaf")
+		};
+		let detached = g.clone();
+		dnd::prune_leaf(self, &loc);
+		self.floating.push(FloatingGroup { group: detached, rect });
+		if let Some(grid) = self.grid.as_mut() {
+			gridview::normalize(grid);
+		}
+		self.maximized = None;
+	}
 }
 
 /// Tree-independent metadata for a panel.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
 pub struct PanelMeta {
 	pub title: String,
 }

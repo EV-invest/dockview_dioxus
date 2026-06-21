@@ -71,21 +71,29 @@ pub fn apply_drop(model: &mut DockModel, source: DragSource, target: &Location, 
 	let panels: Vec<PanelId> = if let Some(source_loc) = grid.locate(source_id) {
 		match &source {
 			DragSource::Tab { panel, .. } => {
-				let GridNode::Leaf(g) = model.grid.as_mut().unwrap().at_mut(&source_loc).unwrap() else { unreachable!() };
+				let GridNode::Leaf(g) = model.grid.as_mut().unwrap().at_mut(&source_loc).unwrap() else {
+					unreachable!()
+				};
 				if g.remove_tab(panel) {
 					prune_leaf(model, &source_loc);
 				}
 				vec![panel.clone()]
 			}
 			DragSource::Group(_) => {
-				let GridNode::Leaf(g) = model.grid.as_ref().unwrap().at(&source_loc).unwrap() else { unreachable!() };
+				let GridNode::Leaf(g) = model.grid.as_ref().unwrap().at(&source_loc).unwrap() else {
+					unreachable!()
+				};
 				let tabs = g.tabs.clone();
 				prune_leaf(model, &source_loc);
 				tabs
 			}
 		}
 	} else {
-		let idx = model.floating.iter().position(|fg| fg.group.id == source_id).expect("apply_drop: source group must be in the grid or floating");
+		let idx = model
+			.floating
+			.iter()
+			.position(|fg| fg.group.id == source_id)
+			.expect("apply_drop: source group must be in the grid or floating");
 		match &source {
 			DragSource::Tab { panel, .. } => {
 				if model.floating[idx].group.remove_tab(panel) {
@@ -107,7 +115,9 @@ pub fn apply_drop(model: &mut DockModel, source: DragSource, target: &Location, 
 
 	match position {
 		Position::Center => {
-			let GridNode::Leaf(g) = model.grid.as_mut().unwrap().at_mut(&target_loc).unwrap() else { unreachable!() };
+			let GridNode::Leaf(g) = model.grid.as_mut().unwrap().at_mut(&target_loc).unwrap() else {
+				unreachable!()
+			};
 			for p in panels {
 				let idx = g.tabs.len();
 				g.insert_tab(p, idx);
@@ -154,13 +164,26 @@ mod tests {
 	}
 	fn branch(orientation: Orientation, kids: Vec<GridNode>) -> GridNode {
 		let size = 100.0 / kids.len() as f64;
-		GridNode::Branch { orientation, children: kids.into_iter().map(|node| Child { node, size }).collect() }
+		GridNode::Branch {
+			orientation,
+			children: kids.into_iter().map(|node| Child { node, size }).collect(),
+		}
 	}
 	fn model(grid: GridNode, next_group_id: u64) -> DockModel {
-		DockModel { grid: Some(grid), floating: vec![], maximized: None, active_group: None, next_group_id, panels: HashMap::new() }
+		DockModel {
+			grid: Some(grid),
+			floating: vec![],
+			maximized: None,
+			active_group: None,
+			next_group_id,
+			panels: HashMap::new(),
+		}
 	}
 	fn floating(group: Group) -> crate::model::FloatingGroup {
-		crate::model::FloatingGroup { group, rect: crate::math::Rect::default() }
+		crate::model::FloatingGroup {
+			group,
+			rect: crate::math::Rect::default(),
+		}
 	}
 
 	#[test]
@@ -178,7 +201,15 @@ mod tests {
 	#[test]
 	fn edge_drop_splits_target() {
 		let mut m = model(branch(Orientation::Horizontal, vec![leaf(1), leaf(2)]), 3);
-		apply_drop(&mut m, DragSource::Tab { panel: p(2), from_group: GroupId(2) }, &vec![0], Position::Bottom);
+		apply_drop(
+			&mut m,
+			DragSource::Tab {
+				panel: p(2),
+				from_group: GroupId(2),
+			},
+			&vec![0],
+			Position::Bottom,
+		);
 		let grid = m.grid.as_ref().unwrap();
 		assert_invariants(grid);
 		// group 2 emptied & pruned; p2 lives in a freshly-minted group split below leaf 1.
@@ -213,7 +244,15 @@ mod tests {
 		g2.insert_tab(p(3), 1);
 		let mut m = model(leaf(1), 3);
 		m.floating.push(floating(g2));
-		apply_drop(&mut m, DragSource::Tab { panel: p(2), from_group: GroupId(2) }, &vec![], Position::Right);
+		apply_drop(
+			&mut m,
+			DragSource::Tab {
+				panel: p(2),
+				from_group: GroupId(2),
+			},
+			&vec![],
+			Position::Right,
+		);
 		let grid = m.grid.as_ref().unwrap();
 		assert_invariants(grid);
 		assert_eq!(m.floating.len(), 1, "g2 survives — it still holds p3");

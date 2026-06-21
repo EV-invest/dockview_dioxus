@@ -16,7 +16,7 @@ use crate::{
 	api::DockApi,
 	geometry::Orientation,
 	math::Rect,
-	model::{GroupAddr, Location, gridview::GridNode, splitview::resize_pair},
+	model::{GroupAddr, Location, gridview::{GridNode, resize_branch}},
 };
 
 /// Render the grid from the model in context, or a watermark when empty. When a leaf is
@@ -143,16 +143,16 @@ pub fn Splitter(parent: Location, index: usize, orientation: Orientation, branch
 					};
 					let delta_pct = (cur - d.start_px) / d.axis_px * 100.0;
 					let mut model = api.model.write();
-					let GridNode::Branch { children, .. } = model.grid.as_mut().expect("grid").at_mut(&d.parent).expect("splitter parent resolves") else {
+					// Reset the dragged pair to its press-time sizes so the cumulative delta is
+					// absolute, not incremental; then apply through the shared resize path.
+					if let GridNode::Branch { children, .. } = model.grid.as_mut().expect("grid").at_mut(&d.parent).expect("splitter parent resolves") {
+						children[d.index].size = d.start_sizes[0];
+						children[d.index + 1].size = d.start_sizes[1];
+					} else {
 						panic!("splitter parent must be a branch");
-					};
-					let mut sizes: Vec<f64> = children.iter().map(|c| c.size).collect();
-					sizes[d.index] = d.start_sizes[0];
-					sizes[d.index + 1] = d.start_sizes[1];
-					resize_pair(&mut sizes, d.index, delta_pct);
-					for (child, s) in children.iter_mut().zip(&sizes) {
-						child.size = *s;
 					}
+					// REVIEW: de-dups the old inline pair-resize; the fuzzer drives this same path.
+					resize_branch(model.grid.as_mut().expect("grid"), &d.parent, d.index, delta_pct);
 				},
 				onpointerup: move |_| drag.set(None),
 				onpointercancel: move |_| drag.set(None),

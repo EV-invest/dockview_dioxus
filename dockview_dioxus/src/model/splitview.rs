@@ -27,7 +27,11 @@ pub enum Sizing {
 pub fn resize_pair(sizes: &mut [f64], index: usize, delta_pct: f64) {
 	assert!(index + 1 < sizes.len(), "resize_pair: no sibling after index");
 	let total = sizes[index] + sizes[index + 1];
-	let new_first = crate::math::clamp(sizes[index] + delta_pct, MIN_CHILD_PCT, total - MIN_CHILD_PCT);
+	// REVIEW (fuzzer-found): a pair summing to < 2·MIN can't honour the floor on both sides,
+	// so clamp the floor itself to total/2 — degenerate pairs split evenly instead of panicking
+	// on an inverted clamp range. Reachable when `normalize` shrinks many siblings below MIN.
+	let floor = MIN_CHILD_PCT.min(total / 2.0);
+	let new_first = crate::math::clamp(sizes[index] + delta_pct, floor, total - floor);
 	sizes[index] = new_first;
 	sizes[index + 1] = total - new_first;
 }

@@ -70,13 +70,12 @@ impl GridNode {
 	fn collect_leaves<'a>(&'a self, path: &mut Location, out: &mut Vec<(Location, &'a Group)>) {
 		match self {
 			GridNode::Leaf(g) => out.push((path.clone(), g)),
-			GridNode::Branch { children, .. } => {
+			GridNode::Branch { children, .. } =>
 				for (i, c) in children.iter().enumerate() {
 					path.push(i);
 					c.node.collect_leaves(path, out);
 					path.pop();
-				}
-			}
+				},
 		}
 	}
 }
@@ -142,6 +141,20 @@ pub fn remove_leaf(root: &mut GridNode, location: &Location) {
 		c.size = *s;
 	}
 	normalize(root);
+}
+
+/// Move `delta_pct` across the splitter between children `index` and `index+1` of the
+/// branch at `parent`, clamped by [`resize_pair`](super::splitview::resize_pair). The
+/// single sizing-edit path shared by the splitter drag and the fuzzer.
+pub fn resize_branch(root: &mut GridNode, parent: &Location, index: usize, delta_pct: f64) {
+	let GridNode::Branch { children, .. } = root.at_mut(parent).expect("resize_branch: parent location must exist") else {
+		panic!("resize_branch: parent must be a branch");
+	};
+	let mut sizes: Vec<f64> = children.iter().map(|c| c.size).collect();
+	crate::model::splitview::resize_pair(&mut sizes, index, delta_pct);
+	for (c, s) in children.iter_mut().zip(&sizes) {
+		c.size = *s;
+	}
 }
 
 /// Restore tree invariants after an edit: drop single-child branches, merge nested
@@ -231,7 +244,10 @@ mod tests {
 		GridNode::Leaf(Group::new(GroupId(id), crate::model::PanelId(format!("p{id}"))))
 	}
 	fn branch(orientation: Orientation, children: Vec<(GridNode, f64)>) -> GridNode {
-		GridNode::Branch { orientation, children: children.into_iter().map(|(node, size)| Child { node, size }).collect() }
+		GridNode::Branch {
+			orientation,
+			children: children.into_iter().map(|(node, size)| Child { node, size }).collect(),
+		}
 	}
 
 	fn idempotent(mut t: GridNode) {

@@ -19,7 +19,11 @@ pub struct Serialized {
 }
 
 pub fn save(model: &DockModel) -> String {
-	serde_json::to_string(&Serialized { version: SCHEMA_VERSION, model: model.clone() }).expect("DockModel is always serializable")
+	serde_json::to_string(&Serialized {
+		version: SCHEMA_VERSION,
+		model: model.clone(),
+	})
+	.expect("DockModel is always serializable")
 }
 
 /// Parse a saved layout. Errors (not a silent default) on malformed/younger JSON so
@@ -47,7 +51,14 @@ mod tests {
 	use crate::model::{GroupId, PanelId, gridview::GridNode, group::Group};
 
 	fn sample() -> DockModel {
-		let mut m = DockModel { grid: Some(GridNode::Leaf(Group::new(GroupId(0), PanelId("a".into())))), floating: vec![], maximized: None, active_group: None, next_group_id: 0, panels: HashMap::new() };
+		let mut m = DockModel {
+			grid: Some(GridNode::Leaf(Group::new(GroupId(0), PanelId("a".into())))),
+			floating: vec![],
+			maximized: None,
+			active_group: None,
+			next_group_id: 0,
+			panels: HashMap::new(),
+		};
 		// drive next_group_id off its default so the round-trip actually proves it persists.
 		let _ = m.mint_group_id();
 		let _ = m.mint_group_id();
