@@ -287,7 +287,22 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 						// pointer — the cell the block visibly covers is where it lands.
 						let cx = c.x - d.grab.0 + d.src_w as f64 * STEP / 2.0;
 						let cy = c.y - d.grab.1 + d.src_h as f64 * STEP / 2.0;
-						d.target = Some(grid.read().resolve_target(cx - ox, cy - oy, STEP, CHROME_H, cols(), d.src_w));
+						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, STEP, CHROME_H, cols(), d.src_w, d.src_h);
+						// The model can only append (it has no tab geometry); refine the slot from the live
+						// preview's tab rects under the cursor. `prev` is the index the preview already shows
+						// (so hovering the inserted ghost holds, not flips), `n` the tabs the source carries.
+						if let DropTarget::Tab { group, index } = t {
+							let prev = match d.target {
+								Some(DropTarget::Tab { group: g, index: i }) if g == group => i,
+								_ => index,
+							};
+							let n = match &d.source {
+								DragSource::Tab { .. } => 1,
+								DragSource::Tile(g) => grid.read().cells.iter().find(|c| c.group.id == *g).expect("drag source group exists").group.tabs.len(),
+							};
+							t = DropTarget::Tab { group, index: tab_drop_index(c.x, c.y, prev, n).unwrap_or(prev) };
+						}
+						d.target = Some(t);
 						drag.set(Some(d));
 					},
 					onpointerup: move |_| {
@@ -373,6 +388,38 @@ struct Drag {
 	target: Option<DropTarget>,
 }
 
+/// The tab slot under client point `(mx, my)`: the index of the tab the cursor is over (its left
+/// half) or just after it (right half), in the *source-free* tab order. `prev` is the index the
+/// live preview currently inserts at and `n` how many tabs the source carries, so the `n` ghost
+/// tabs at `[prev, prev+n)` are mapped out — hovering one returns `None` (hold, don't flip). The
+/// caller falls back to `prev` on `None`. Reads the preview's own DOM rects (`data-ti`), the one
+/// place this layer measures, because the model has no tab widths.
+#[cfg(target_arch = "wasm32")]
+fn tab_drop_index(mx: f64, my: f64, prev: usize, n: usize) -> Option<usize> {
+	use wasm_bindgen::JsCast;
+	let doc = web_sys::window()?.document()?;
+	let els = doc.elements_from_point(mx as f32, my as f32);
+	for i in 0..els.length() {
+		let Ok(el) = els.get(i).dyn_into::<web_sys::Element>() else { continue };
+		if !el.class_list().contains("dv-tab") {
+			continue;
+		}
+		let ti: usize = el.get_attribute("data-ti")?.parse().ok()?;
+		// Ghost tabs occupy [prev, prev+n); over one ⇒ hold. Else map preview index back to source-free.
+		if (prev..prev + n).contains(&ti) {
+			return None;
+		}
+		let real = if ti >= prev + n { ti - n } else { ti };
+		let r = el.get_bounding_client_rect();
+		return Some(if mx < r.x() + r.width() / 2.0 { real } else { real + 1 });
+	}
+	None
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn tab_drop_index(_: f64, _: f64, _: usize, _: usize) -> Option<usize> {
+	None
+}
+
 /// Corner-resize gesture captured at `pointerdown`: pointer start + the tile's size (in steps) then.
 #[derive(Clone, Copy)]
 struct ResizeStart {
@@ -416,14 +463,20 @@ fn PackedFrame(idx: usize) -> Element {
 	let style = if *maximized.read() == Some(gid) {
 		"left:0; top:0; width:100%; height:100%;".to_string()
 	} else {
-		format!("left:{}px; top:{}px; width:{}px; height:{}px;", x as f64 * STEP, y as f64 * STEP, w as f64 * STEP, h as f64 * STEP)
+		format!(
+			"left:{}px; top:{}px; width:{}px; height:{}px;",
+			x as f64 * STEP,
+			y as f64 * STEP,
+			w as f64 * STEP,
+			h as f64 * STEP
+		)
 	};
 
 	// While a drag is armed, mark this cell if it's where the source lands (a grey shadow for
 	// Displace/Pack) or, for a Tab target, the group whose header is the drop site.
 	let (is_shadow, tab_highlight) = match drag.read().clone() {
 		Some(d) if d.armed => match d.target {
-			Some(DropTarget::Tab(t)) => (false, t == gid),
+			Some(DropTarget::Tab { group, .. }) => (false, group == gid),
 			Some(DropTarget::Displace { .. }) | Some(DropTarget::Pack { .. }) => {
 				let src = match &d.source {
 					DragSource::Tile(g) => *g == gid,
@@ -462,6 +515,7 @@ fn PackedFrame(idx: usize) -> Element {
 					for (i , (id , t)) in tabs.iter().enumerate() {
 						div {
 							key: "{id.0}",
+							"data-ti": "{i}",
 							class: if i == active { "dv-tab dv-active" } else { "dv-tab" },
 							onpointerdown: {
 								let id = id.clone();

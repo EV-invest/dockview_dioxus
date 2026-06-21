@@ -98,7 +98,13 @@ pub fn generate(frng: &mut Frng, world: &World, weights: &[u32; N_KINDS]) -> Opt
 				}
 			};
 			let target = match frng.below(3) {
-				0 => DropTarget::Tab(cells[frng.below(cells.len() as u32) as usize].group.id),
+				0 => {
+					let c = &cells[frng.below(cells.len() as u32) as usize];
+					DropTarget::Tab {
+						group: c.group.id,
+						index: frng.below(c.group.tabs.len() as u32 + 1) as usize,
+					}
+				}
 				1 => {
 					let c = &cells[frng.below(cells.len() as u32) as usize];
 					DropTarget::Displace { x: c.x, y: c.y }

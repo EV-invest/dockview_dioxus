@@ -39,7 +39,7 @@ impl Default for Keybinds {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct Config {
 	pub keybinds: Keybinds,
 }

@@ -179,22 +179,30 @@ impl PackedGrid {
 	/// - clear of every tile ⇒ the pointer's own column/row: still [`Displace`] if tiles sit
 	///   at/below that row in this span (so it works above and outside the tiles, past the
 	///   container's edge), else [`Pack`](DropTarget::Pack) onto the skyline (empty below).
-	pub fn resolve_target(&self, px: f64, py: f64, step: f64, chrome: f64, cols: u32, src_w: u32) -> DropTarget {
-		let col = ((px / step).floor().max(0.0) as u32).min(cols.saturating_sub(src_w));
+	/// `px`/`py` is the *center* of the block being dragged — it anchors the shadow's landing
+	/// cell (top-left column/row = center minus half the block's own size). `mx`/`my` is the raw
+	/// pointer: it decides *which* tile we join or displace, so you aim with the cursor (header to
+	/// tab, body to push down) while the shadow stays centered on the block.
+	pub fn resolve_target(&self, px: f64, py: f64, mx: f64, my: f64, step: f64, chrome: f64, cols: u32, src_w: u32, src_h: u32) -> DropTarget {
+		let col = (((px - src_w as f64 * step / 2.0) / step).round().max(0.0) as u32).min(cols.saturating_sub(src_w));
 		for c in &self.cells {
 			let (l, t) = (c.x as f64 * step, c.y as f64 * step);
 			let (r, b) = ((c.x + c.w) as f64 * step, (c.y + c.h) as f64 * step);
-			if px >= l && px < r && py >= t && py < b {
+			if mx >= l && mx < r && my >= t && my < b {
 				// Header ⇒ join; body ⇒ shadow at the row below this tile (so it stays put), but at
-				// the pointer's own column — the x tracks the cursor exactly as it does in open space.
-				return if py < t + chrome {
-					DropTarget::Tab(c.group.id)
+				// the block's own column — the x tracks the dragged block as it does in open space.
+				return if my < t + chrome {
+					// Default to append; the render layer refines `index` from the live tab geometry.
+					DropTarget::Tab {
+						group: c.group.id,
+						index: c.group.tabs.len(),
+					}
 				} else {
 					DropTarget::Displace { x: col, y: c.y + c.h }
 				};
 			}
 		}
-		let row = (py / step).floor().max(0.0) as u32;
+		let row = ((py - src_h as f64 * step / 2.0) / step).round().max(0.0) as u32;
 		if row < skyline(&self.cells, col, src_w) {
 			DropTarget::Displace { x: col, y: row }
 		} else {
@@ -212,7 +220,7 @@ impl PackedGrid {
 	/// - [`Pack`](DropTarget::Pack) → drop at `(x, skyline)` and settle.
 	/// Dropping onto the source's own group is a no-op.
 	pub fn drop(&mut self, source: DragSource, target: DropTarget, cols: u32) {
-		if matches!(target, DropTarget::Tab(t) if t == source.group()) {
+		if matches!(target, DropTarget::Tab { group, .. } if group == source.group()) {
 			return;
 		}
 		let (group, w, h, min_w, min_h) = match source {
@@ -237,9 +245,12 @@ impl PackedGrid {
 		// than spilling past `cols` (the same rule [`resize`] enforces).
 		let clamp_x = |x: u32| x.min(cols.saturating_sub(w));
 		match target {
-			DropTarget::Tab(t) => {
+			DropTarget::Tab { group: t, index } => {
+				let dst = self.locate(t).expect("drop: tab target exists");
+				let mut at = index.min(self.cells[dst].group.tabs.len());
 				for p in group.tabs {
-					self.add_tab(t, p);
+					self.cells[dst].group.insert_tab(p, at);
+					at += 1;
 				}
 				gravity(&mut self.cells, None);
 			}
@@ -288,9 +299,18 @@ impl DragSource {
 /// Where a drag resolves to (see [`PackedGrid::resolve_target`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DropTarget {
-	Tab(GroupId),
-	Displace { x: u32, y: u32 },
-	Pack { x: u32 },
+	/// Join `group`, inserting the incoming tab(s) at `index` (the slot the cursor points at).
+	Tab {
+		group: GroupId,
+		index: usize,
+	},
+	Displace {
+		x: u32,
+		y: u32,
+	},
+	Pack {
+		x: u32,
+	},
 }
 
 /// Choose `(x, y)` for a `w×h` tile: a skyline pack that grows the layout's lowest point
