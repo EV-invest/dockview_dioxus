@@ -120,9 +120,34 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	use_hook(|| {
 		use wasm_bindgen::{JsCast, closure::Closure};
 		let handler = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+			// Don't hijack typing: ignore keys aimed at a form field / editable content, so a bare
+			// `u`/`F`/`Delete` bind only acts on the layout, never on text the user is entering.
+			if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
+				if matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT") || el.dyn_ref::<web_sys::HtmlElement>().is_some_and(web_sys::HtmlElement::is_content_editable) {
+					return;
+				}
+			}
 			let (mut grid, mut undo, mut focused, mut maximized, mut api) = (grid, undo, focused, maximized, api);
 			let kb = cfg.keybinds;
 			let (code, alt, shift, ctrl) = (e.code(), e.alt_key(), e.shift_key(), e.ctrl_key());
+			//dbg
+			let dbg = if kb.undo.matches(&code, alt, shift, ctrl) {
+				"undo"
+			} else if kb.redo.matches(&code, alt, shift, ctrl) {
+				"redo"
+			} else if kb.close.matches(&code, alt, shift, ctrl) {
+				"close"
+			} else if kb.maximize.matches(&code, alt, shift, ctrl) {
+				"maximize"
+			} else {
+				""
+			};
+			if !dbg.is_empty() {
+				web_sys::window()
+					.expect("window")
+					.alert_with_message(&format!("dv heard: {dbg} (code={code}, focused={:?})", focused()))
+					.expect("alert");
+			}
 			if kb.undo.matches(&code, alt, shift, ctrl) {
 				e.prevent_default();
 				if let Some(g) = undo.write().step(-1) {
@@ -289,18 +314,13 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 						let cy = c.y - d.grab.1 + d.src_h as f64 * STEP / 2.0;
 						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, STEP, CHROME_H, cols(), d.src_w, d.src_h);
 						// The model can only append (it has no tab geometry); refine the slot from the live
-						// preview's tab rects under the cursor. `prev` is the index the preview already shows
-						// (so hovering the inserted ghost holds, not flips), `n` the tabs the source carries.
+						// preview's tab rects, skipping the ghost's own tab(s) so we read the source-free order.
 						if let DropTarget::Tab { group, index } = t {
-							let prev = match d.target {
-								Some(DropTarget::Tab { group: g, index: i }) if g == group => i,
-								_ => index,
+							let dragged: Vec<String> = match &d.source {
+								DragSource::Tab { panel, .. } => vec![panel.0.clone()],
+								DragSource::Tile(g) => grid.read().cells.iter().find(|c| c.group.id == *g).expect("drag source group exists").group.tabs.iter().map(|p| p.0.clone()).collect(),
 							};
-							let n = match &d.source {
-								DragSource::Tab { .. } => 1,
-								DragSource::Tile(g) => grid.read().cells.iter().find(|c| c.group.id == *g).expect("drag source group exists").group.tabs.len(),
-							};
-							t = DropTarget::Tab { group, index: tab_drop_index(c.x, c.y, prev, n).unwrap_or(prev) };
+							t = DropTarget::Tab { group, index: tab_drop_index(c.x, group.0, &dragged).unwrap_or(index) };
 						}
 						d.target = Some(t);
 						drag.set(Some(d));
@@ -388,35 +408,37 @@ struct Drag {
 	target: Option<DropTarget>,
 }
 
-/// The tab slot under client point `(mx, my)`: the index of the tab the cursor is over (its left
-/// half) or just after it (right half), in the *source-free* tab order. `prev` is the index the
-/// live preview currently inserts at and `n` how many tabs the source carries, so the `n` ghost
-/// tabs at `[prev, prev+n)` are mapped out — hovering one returns `None` (hold, don't flip). The
-/// caller falls back to `prev` on `None`. Reads the preview's own DOM rects (`data-ti`), the one
-/// place this layer measures, because the model has no tab widths.
+/// Insertion slot for cursor x `mx` among `group`'s tabs in the live preview DOM: the count of
+/// *real* tabs whose horizontal center is left of `mx` (so left-half ⇒ before, right-half ⇒
+/// after). `dragged` are the panel ids the source carries — the preview already inserts them as
+/// the floating ghost's tab(s), so they're skipped, leaving the source-free order this index
+/// addresses (identical math whether re-homing into another group or reordering within one). The
+/// one place this layer measures, because the model has no tab widths; `None` ⇒ DOM not ready,
+/// caller keeps the append default.
 #[cfg(target_arch = "wasm32")]
-fn tab_drop_index(mx: f64, my: f64, prev: usize, n: usize) -> Option<usize> {
+fn tab_drop_index(mx: f64, group: u64, dragged: &[String]) -> Option<usize> {
 	use wasm_bindgen::JsCast;
 	let doc = web_sys::window()?.document()?;
-	let els = doc.elements_from_point(mx as f32, my as f32);
-	for i in 0..els.length() {
-		let Ok(el) = els.get(i).dyn_into::<web_sys::Element>() else { continue };
-		if !el.class_list().contains("dv-tab") {
+	// Selector is numeric-only, so it can't be malformed — `.ok()?` only trips if the doc is absent.
+	let nodes = doc.query_selector_all(&format!("[data-dvg=\"{group}\"] .dv-tab")).ok()?;
+	let mut idx = 0;
+	for i in 0..nodes.length() {
+		let Some(el) = nodes.get(i).and_then(|n| n.dyn_into::<web_sys::Element>().ok()) else {
+			continue;
+		};
+		// Every `.dv-tab` carries `data-panel`; default "" just classes a (nonexistent) attr-less tab as real.
+		if dragged.iter().any(|p| *p == el.get_attribute("data-panel").unwrap_or_default()) {
 			continue;
 		}
-		let ti: usize = el.get_attribute("data-ti")?.parse().ok()?;
-		// Ghost tabs occupy [prev, prev+n); over one ⇒ hold. Else map preview index back to source-free.
-		if (prev..prev + n).contains(&ti) {
-			return None;
-		}
-		let real = if ti >= prev + n { ti - n } else { ti };
 		let r = el.get_bounding_client_rect();
-		return Some(if mx < r.x() + r.width() / 2.0 { real } else { real + 1 });
+		if mx > r.x() + r.width() / 2.0 {
+			idx += 1;
+		}
 	}
-	None
+	Some(idx)
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn tab_drop_index(_: f64, _: f64, _: usize, _: usize) -> Option<usize> {
+fn tab_drop_index(_: f64, _: u64, _: &[String]) -> Option<usize> {
 	None
 }
 
@@ -502,6 +524,7 @@ fn PackedFrame(idx: usize) -> Element {
 			div { class: "dv-group",
 				div {
 					class: "{header_class}",
+					"data-dvg": "{gid.0}",
 					onpointerdown: move |e: PointerEvent| {
 						if e.trigger_button() != Some(MouseButton::Primary) {
 							return;
@@ -515,7 +538,7 @@ fn PackedFrame(idx: usize) -> Element {
 					for (i , (id , t)) in tabs.iter().enumerate() {
 						div {
 							key: "{id.0}",
-							"data-ti": "{i}",
+							"data-panel": "{id.0}",
 							class: if i == active { "dv-tab dv-active" } else { "dv-tab" },
 							onpointerdown: {
 								let id = id.clone();

@@ -218,10 +218,17 @@ impl PackedGrid {
 	///   at or below that row in its columns shoves down (the row resolves to *below* a hovered
 	///   tile, so that tile stays — see [`resolve_target`](Self::resolve_target));
 	/// - [`Pack`](DropTarget::Pack) → drop at `(x, skyline)` and settle.
-	/// Dropping onto the source's own group is a no-op.
+	/// Dropping onto the source's own group is a no-op, *except* tearing one tab back into its own
+	/// multi-tab group — that reorders it to `index` (remove-then-reinsert).
 	pub fn drop(&mut self, source: DragSource, target: DropTarget, cols: u32) {
-		if matches!(target, DropTarget::Tab { group, .. } if group == source.group()) {
-			return;
+		if let DropTarget::Tab { group, .. } = target {
+			if group == source.group() {
+				let reorder = matches!(&source, DragSource::Tab { from, .. }
+					if self.cells[self.locate(*from).expect("drop: source group exists")].group.tabs.len() > 1);
+				if !reorder {
+					return;
+				}
+			}
 		}
 		let (group, w, h, min_w, min_h) = match source {
 			DragSource::Tile(g) => {
