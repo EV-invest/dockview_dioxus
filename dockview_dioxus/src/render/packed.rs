@@ -37,8 +37,8 @@ use crate::{
 const STEP: f64 = 120.0;
 /// Approx root font size; resolves a type's rem-expressed [`MinSize`] to whole steps.
 const REM_PX: f64 = 16.0;
-/// Fixed titlebar (28) + tabstrip (40) height (CSS pins both); content starts below it.
-const CHROME_H: f64 = 68.0;
+/// Fixed header-bar height (CSS pins it); content starts below it.
+const CHROME_H: f64 = 32.0;
 /// A press promotes to a drag only past this many px, so a click still activates a tab.
 const DRAG_THRESHOLD: f64 = 4.0;
 
@@ -229,7 +229,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			}
 			if let Some((title, left, top, gw, gh)) = ghost {
 				div { class: "dv-ghost", style: "left:{left}px; top:{top}px; width:{gw}px; height:{gh}px;",
-					div { class: "dv-titlebar", span { class: "dv-title", "{title}" } }
+					div { class: "dv-header", div { class: "dv-tab dv-active", "{title}" } }
 				}
 			}
 		}
@@ -261,13 +261,14 @@ struct ResizeStart {
 	h: u32,
 }
 
-/// One tile: absolutely positioned at `x*STEP, y*STEP, w*STEP, h*STEP`, with a titlebar
-/// (drag to reposition the whole tile), a local tab strip (drag a tab to tear it out), an empty
-/// body filler, and a bottom-right resize grip that snaps the pointer delta to whole steps. The
-/// `+`/`x` chrome: `+` asks the host (via a [`Callback<GroupId>`] context) to open a tab; `x`
-/// closes the active tab (and removes the now-empty tile). The body is just a spacer — content
-/// rides in the overlay, positioned from the same grid rect. Layout reads come from the preview
-/// `view`; gestures write the real grid through [`PackedApi`].
+/// One tile: absolutely positioned at `x*STEP, y*STEP, w*STEP, h*STEP`, with a single header bar
+/// (its empty area drags to reposition the whole tile; a tab drags to tear it out — the active
+/// tab is the title, so there's no separate titlebar), an empty body filler, and a bottom-right
+/// resize grip that snaps the pointer delta to whole steps. The `+`/`x` chrome (right of the
+/// tabs): `+` asks the host (via a [`Callback<GroupId>`] context) to open a tab; `x` closes the
+/// active tab (and removes the now-empty tile). The body is just a spacer — content rides in the
+/// overlay, positioned from the same grid rect. Layout reads come from the preview `view`;
+/// gestures write the real grid through [`PackedApi`].
 #[component]
 fn PackedFrame(idx: usize) -> Element {
 	let mut api = use_context::<PackedApi>();
@@ -284,7 +285,6 @@ fn PackedFrame(idx: usize) -> Element {
 		let tabs: Vec<(PanelId, String)> = c.group.tabs.iter().map(|id| (id.clone(), titles.get(id).cloned().unwrap_or_default())).collect();
 		(c.group.id, c.x, c.y, c.w, c.h, tabs, c.group.active)
 	};
-	let title = tabs.get(active).map(|(_, t)| t.clone()).unwrap_or_default();
 	let style = format!(
 		"left:{}px; top:{}px; width:{}px; height:{}px;",
 		x as f64 * STEP,
@@ -293,8 +293,8 @@ fn PackedFrame(idx: usize) -> Element {
 		h as f64 * STEP
 	);
 
-	// While a drag is armed, mark this cell if it's where the source lands (a translucent shadow
-	// for Displace/Pack) or, for a Tab target, the group whose tabstrip is the drop site.
+	// While a drag is armed, mark this cell if it's where the source lands (a grey shadow for
+	// Displace/Pack) or, for a Tab target, the group whose header is the drop site.
 	let (is_shadow, tab_highlight) = match drag.read().clone() {
 		Some(d) if d.armed => match d.target {
 			Some(DropTarget::Tab(t)) => (false, t == gid),
@@ -316,13 +316,13 @@ fn PackedFrame(idx: usize) -> Element {
 		return rsx! { div { class: "dv-tile dv-shadow", style: "{style}" } };
 	}
 
-	let tabstrip_class = if tab_highlight { "dv-tabstrip dv-tab-drop" } else { "dv-tabstrip" };
+	let header_class = if tab_highlight { "dv-header dv-tab-drop" } else { "dv-header" };
 
 	rsx! {
 		div { class: "dv-tile", style: "{style}",
 			div { class: "dv-group",
 				div {
-					class: "dv-titlebar",
+					class: "{header_class}",
 					onpointerdown: move |e: PointerEvent| {
 						if e.trigger_button() != Some(MouseButton::Primary) {
 							return;
@@ -332,25 +332,6 @@ fn PackedFrame(idx: usize) -> Element {
 						let g = e.element_coordinates();
 						drag.set(Some(Drag { source: DragSource::Tile(gid), src_w: w, src_h: h, start: (c.x, c.y), grab: (g.x, g.y), cursor: (c.x, c.y), armed: false, target: None }));
 					},
-					span { class: "dv-title", "{title}" }
-					div { class: "dv-actions",
-						button {
-							class: "dv-action",
-							title: "Add window as a tab",
-							onpointerdown: |e: PointerEvent| e.stop_propagation(),
-							onclick: move |_| request_tab.call(gid),
-							"+"
-						}
-						button {
-							class: "dv-action",
-							title: "Close",
-							onpointerdown: |e: PointerEvent| e.stop_propagation(),
-							onclick: move |_| api.close_active(gid),
-							"✕"
-						}
-					}
-				}
-				div { class: "{tabstrip_class}",
 					for (i , (id , t)) in tabs.iter().enumerate() {
 						div {
 							key: "{id.0}",
@@ -377,6 +358,22 @@ fn PackedFrame(idx: usize) -> Element {
 								}
 							},
 							"{t}"
+						}
+					}
+					div { class: "dv-actions",
+						button {
+							class: "dv-action",
+							title: "Add window as a tab",
+							onpointerdown: |e: PointerEvent| e.stop_propagation(),
+							onclick: move |_| request_tab.call(gid),
+							"+"
+						}
+						button {
+							class: "dv-action",
+							title: "Close",
+							onpointerdown: |e: PointerEvent| e.stop_propagation(),
+							onclick: move |_| api.close_active(gid),
+							"✕"
 						}
 					}
 				}

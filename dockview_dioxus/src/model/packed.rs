@@ -156,10 +156,16 @@ impl PackedGrid {
 	}
 
 	/// Pure pointer → [`DropTarget`] in the packed root's px space (tile rect = `x·step …`,
-	/// chrome band = `chrome` px). The hovered tile's pane-top ⇒ [`Tab`](DropTarget::Tab);
-	/// its body ⇒ [`Displace`](DropTarget::Displace) at that cell; empty area ⇒
-	/// [`Pack`](DropTarget::Pack) at the snapped column, `x` clamped to `[0, cols−src_w]`.
+	/// chrome band = `chrome` px), `x` clamped to `[0, cols−src_w]`:
+	/// - hovered tile's header ⇒ [`Tab`](DropTarget::Tab) (join);
+	/// - hovered tile's body ⇒ [`Displace`](DropTarget::Displace) at the row *below* that tile,
+	///   so the stack under it shoves down while the hovered tile itself stays put — to displace
+	///   a tile you point above it, never at it, so you can still aim its header to join;
+	/// - clear of every tile ⇒ the pointer's own column/row: still [`Displace`] if tiles sit
+	///   at/below that row in this span (so it works above and outside the tiles, past the
+	///   container's edge), else [`Pack`](DropTarget::Pack) onto the skyline (empty below).
 	pub fn resolve_target(&self, px: f64, py: f64, step: f64, chrome: f64, cols: u32, src_w: u32) -> DropTarget {
+		let clamp = |x: u32| x.min(cols.saturating_sub(src_w));
 		for c in &self.cells {
 			let (l, t) = (c.x as f64 * step, c.y as f64 * step);
 			let (r, b) = ((c.x + c.w) as f64 * step, (c.y + c.h) as f64 * step);
@@ -167,13 +173,16 @@ impl PackedGrid {
 				return if py < t + chrome {
 					DropTarget::Tab(c.group.id)
 				} else {
-					DropTarget::Displace { x: c.x, y: c.y }
+					DropTarget::Displace { x: clamp(c.x), y: c.y + c.h }
 				};
 			}
 		}
-		let col = (px / step).floor().max(0.0) as u32;
-		DropTarget::Pack {
-			x: col.min(cols.saturating_sub(src_w)),
+		let col = clamp((px / step).floor().max(0.0) as u32);
+		let row = (py / step).floor().max(0.0) as u32;
+		if row < skyline(&self.cells, col, src_w) {
+			DropTarget::Displace { x: col, y: row }
+		} else {
+			DropTarget::Pack { x: col }
 		}
 	}
 
@@ -181,8 +190,9 @@ impl PackedGrid {
 	/// group keeps the rest, pruned if emptied; a whole tile → remove its cell, capturing
 	/// `(w, h, min)`), then re-home per `target`:
 	/// - [`Tab`](DropTarget::Tab) → append the panel(s) into that group, then settle upward;
-	/// - [`Displace`](DropTarget::Displace) → drop a cell at the hovered `(x, y)` and pin it,
-	///   so the hovered tile and everything below it shove down;
+	/// - [`Displace`](DropTarget::Displace) → drop a cell at `(x, y)` and pin it, so everything
+	///   at or below that row in its columns shoves down (the row resolves to *below* a hovered
+	///   tile, so that tile stays — see [`resolve_target`](Self::resolve_target));
 	/// - [`Pack`](DropTarget::Pack) → drop at `(x, skyline)` and settle.
 	/// Dropping onto the source's own group is a no-op.
 	pub fn drop(&mut self, source: DragSource, target: DropTarget, cols: u32) {
