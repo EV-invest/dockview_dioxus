@@ -1,27 +1,28 @@
 #![feature(default_field_values)]
-//! `dockview_dioxus` — a dockview-faithful tiling/docking layout for Dioxus.
+//! `dockview_dioxus` — a packed-grid tiling layout for Dioxus.
 //!
-//! Port of `dockview-core` (MIT, see `docs/refs/dockview-core`). The split that
-//! makes it idiomatic Dioxus: dockview fuses a DOM element into every class, we
-//! instead keep a pure data **model** ([`model`]) in one `Signal` and derive a
-//! declarative **render** ([`render`]) from it. See `docs/ARCHITECTURE.md`.
+//! Tiles have a fixed starting size, snap to a step grid, never overlap, and leave
+//! whitespace below (InsilicoTerminal's look, `docs/refs/insilico/`). A pure data
+//! **model** ([`model`]) lives in one `Signal`; a declarative **render** ([`render`])
+//! is derived from it.
 //!
-//! Two render layers, exactly like dockview:
-//! - a recursive *skeleton* of frames/tabs/splitters (content-free, safe to remount),
-//! - a flat, id-keyed *content overlay* positioned from measured boxes — this is what
-//!   keeps panel component instances (and their JS state, e.g. a live map) alive across
-//!   layout restructuring. Dockview does the same via `OverlayRenderContainer`.
+//! Two render layers, both positioned from the model's integer grid rects (no DOM measuring):
+//! - a *skeleton* of absolutely-positioned tile frames (content-free, safe to remount),
+//! - a flat, id-keyed *content overlay* — what keeps panel component instances (and their JS
+//!   state) alive across layout restructuring.
+//!
+//! Tiles reposition by drag: pick up a titlebar or tear a tab, and a cloned `drop` previews
+//! the result live (other tiles settling, a shadow over the landing cell) before commit.
 
-pub mod api;
-pub mod geometry;
 pub mod math;
 pub mod model;
 pub mod panel;
 pub mod persist;
 pub mod render;
 
-pub use api::DockApi;
-pub use geometry::{Orientation, Position};
-pub use model::{DockModel, GroupId, PanelId};
+pub use model::{
+	Group, GroupId, PanelId,
+	packed::{MinSize, PackedGrid, Step},
+};
 pub use panel::DockPanel;
-pub use render::{DockArea, DockAreaProps};
+pub use render::packed::{PackedApi, PackedArea};

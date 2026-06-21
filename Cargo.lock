@@ -18,12 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "askama_escape"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3df27b8d5ddb458c5fb1bbc1ce172d4a38c614a97d550b0ac89003897fb01de4"
-
-[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -457,17 +451,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
-name = "derive-new"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -881,18 +864,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxus-ssr"
-version = "0.7.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d261c5c9907b84fb1ed52f59f46d68c84a4ae860a65cc5effd0cea740ee428af"
-dependencies = [
- "askama_escape",
- "dioxus-core",
- "dioxus-core-types",
- "rustc-hash 2.1.2",
-]
-
-[[package]]
 name = "dioxus-stores"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -964,12 +935,10 @@ dependencies = [
 name = "dockview_dioxus"
 version = "0.1.0"
 dependencies = [
- "derive-new",
  "dioxus",
- "dioxus-ssr",
+ "gloo-timers",
  "serde",
  "serde_json",
- "wasm-bindgen",
  "web-sys",
 ]
 

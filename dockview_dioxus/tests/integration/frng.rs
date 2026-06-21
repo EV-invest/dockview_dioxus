@@ -61,9 +61,4 @@ impl Frng {
 		}
 		unreachable!("weighted: pick < total always lands in a bucket")
 	}
-
-	/// 0.0..=1.0
-	pub fn unit(&mut self) -> f64 {
-		self.byte() as f64 / 255.0
-	}
 }

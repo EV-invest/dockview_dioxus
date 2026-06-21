@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 
 use crate::model::PanelId;
 
-/// One widget the consumer hands to [`DockArea`](crate::render::DockArea). The
+/// One widget the consumer hands to [`PackedArea`](crate::render::packed::PackedArea). The
 /// `content` `Element` is rendered once per panel in a stable, id-keyed list inside
 /// the content-overlay layer — never re-parented when the layout changes — so the
 /// component instance (and any inner JS state, e.g. a live map) is preserved.

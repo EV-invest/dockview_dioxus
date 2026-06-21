@@ -45,12 +45,4 @@ impl Group {
 		self.active = self.active.min(self.tabs.len() - 1);
 		false
 	}
-
-	/// Reorder a tab within the strip (drag within the same header).
-	pub fn move_tab(&mut self, from: usize, to: usize) {
-		let active_id = self.tabs[self.active].clone();
-		let panel = self.tabs.remove(from);
-		self.tabs.insert(to, panel);
-		self.active = self.tabs.iter().position(|p| *p == active_id).expect("active panel survives a reorder");
-	}
 }

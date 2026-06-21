@@ -1,39 +1,36 @@
-//! JSON (de)serialization of the layout. Port of the `serialize`/`deserialize`
-//! halves of `dockview-core/src/gridview/gridview.ts` and `dockview/deserializer.ts`.
-//!
-//! [`DockModel`] already derives serde, so a layout round-trips to JSON directly —
-//! `DockModel` *is* the serialized value, like react-mosaic's tree. This module is
-//! the seam for keeping that JSON **stable across versions** (schema tag + migrations);
-//! dockview's `validate.ts`/`fromJSON` resets on a corrupt layout rather than fall back.
+//! JSON (de)serialization of the packed layout. [`PackedGrid`] already derives serde, so a
+//! layout round-trips to JSON directly — `PackedGrid` *is* the serialized value. This module
+//! is the seam for keeping that JSON **stable across versions** (schema tag + migrations);
+//! `load` errors on a younger payload rather than silently wiping the user's workspace.
 
-use crate::model::DockModel;
+use crate::model::packed::PackedGrid;
 
-/// Bump when the on-disk shape changes; `load` migrates older payloads.
+/// Bump when the on-disk shape changes; `load` would migrate older payloads.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Versioned wrapper actually written to storage.
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct Serialized {
 	pub version: u32,
-	pub model: DockModel,
+	pub grid: PackedGrid,
 }
 
-pub fn save(model: &DockModel) -> String {
+pub fn save(grid: &PackedGrid) -> String {
 	serde_json::to_string(&Serialized {
 		version: SCHEMA_VERSION,
-		model: model.clone(),
+		grid: grid.clone(),
 	})
-	.expect("DockModel is always serializable")
+	.expect("PackedGrid is always serializable")
 }
 
-/// Parse a saved layout. Errors (not a silent default) on malformed/younger JSON so
-/// a corrupt layout surfaces instead of silently wiping the user's workspace.
-pub fn load(json: &str) -> Result<DockModel, LoadError> {
+/// Parse a saved layout. Errors (not a silent default) on malformed/younger JSON so a corrupt
+/// or future-version layout surfaces instead of silently resetting the workspace.
+pub fn load(json: &str) -> Result<PackedGrid, LoadError> {
 	let serialized: Serialized = serde_json::from_str(json).map_err(LoadError::Parse)?;
 	if serialized.version > SCHEMA_VERSION {
 		return Err(LoadError::FutureVersion(serialized.version));
 	}
-	Ok(serialized.model)
+	Ok(serialized.grid)
 }
 
 #[derive(Debug)]
@@ -45,32 +42,25 @@ pub enum LoadError {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::HashMap;
-
 	use super::*;
-	use crate::model::{GroupId, PanelId, gridview::GridNode, group::Group};
+	use crate::model::{Group, GroupId, PanelId};
 
-	fn sample() -> DockModel {
-		let mut m = DockModel {
-			grid: Some(GridNode::Leaf(Group::new(GroupId(0), PanelId("a".into())))),
-			floating: vec![],
-			maximized: None,
-			active_group: None,
-			next_group_id: 0,
-			panels: HashMap::new(),
-		};
-		// drive next_group_id off its default so the round-trip actually proves it persists.
-		let _ = m.mint_group_id();
-		let _ = m.mint_group_id();
-		m
+	/// A non-trivial grid driven through the real API so the round-trip proves `next_group_id`
+	/// (private, but observable via id collisions) and cell geometry survive.
+	fn sample() -> PackedGrid {
+		let mut g = PackedGrid::default();
+		let gid = g.mint_group_id();
+		g.place(Group::new(gid, PanelId("a".into())), 3, 2, (1, 1), 6);
+		let gid = g.mint_group_id();
+		g.place(Group::new(gid, PanelId("b".into())), 2, 4, (1, 1), 6);
+		g.add_tab(GroupId(0), PanelId("c".into()));
+		g
 	}
 
 	#[test]
-	fn round_trips_including_next_group_id() {
-		let m = sample();
-		let back = load(&save(&m)).expect("loads");
-		assert_eq!(back.next_group_id, m.next_group_id, "next_group_id must survive to avoid id collisions");
-		assert_eq!(back.grid, m.grid);
+	fn round_trips() {
+		let g = sample();
+		assert_eq!(load(&save(&g)).expect("loads"), g, "round-trip must preserve the grid (incl. next_group_id)");
 	}
 
 	#[test]

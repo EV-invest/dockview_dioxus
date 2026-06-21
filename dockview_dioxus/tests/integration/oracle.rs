@@ -1,110 +1,54 @@
-//! The contract checked after *every* action — independent of the implementation.
-//! Three layers: structural tree invariants (re-implemented here so the oracle never
-//! leans on prod's `cfg(test)` checker), panel conservation against the seed set, and a
-//! serde round-trip. Returns `Err(reason)` rather than panicking so the minimizer
-//! survives a violation (production `expect`/`unreachable` blowups are caught separately).
+//! The contract checked after every *settled* step — independent of the implementation.
+//! The packed model's no-overlap guarantee holds only while [`GridState::Settled`], so the
+//! oracle asserts: the grid is settled and overlap-free, every cell honours its per-type
+//! minimum and stays within `cols`, every group is non-empty with `active` in range, ids and
+//! panels are unique, and the layout survives a serde round-trip. Returns `Err(reason)` rather
+//! than panicking so the minimizer survives a violation (production `expect`/`unreachable`
+//! blowups are caught separately by `catch_unwind`).
 
 use std::collections::HashSet;
 
-use dockview_dioxus::model::{DockModel, GridNode, GroupId, serial};
+use dockview_dioxus::model::{
+	packed::{GridState, PackedGrid},
+	serial,
+};
 
-pub fn check(model: &DockModel, initial_panels: &[String]) -> Result<(), String> {
-	if let Some(grid) = &model.grid {
-		invariants(grid)?;
+pub fn check(grid: &PackedGrid, cols: u32) -> Result<(), String> {
+	if grid.state != GridState::Settled {
+		return Err(format!("grid not settled: {:?}", grid.state));
 	}
-	for fg in &model.floating {
-		// A floating group must satisfy the same leaf invariants (non-empty, active in range).
-		invariants(&GridNode::Leaf(fg.group.clone()))?;
-	}
-
-	let mut live = live_panels(model);
-	live.sort();
-	if live != initial_panels {
-		return Err(format!("panel set drifted: live {live:?} != seed {initial_panels:?}"));
+	if let Some((i, j)) = grid.overlaps() {
+		return Err(format!("overlap: {:?} vs {:?}", grid.cells[i], grid.cells[j]));
 	}
 
-	let mut seen = HashSet::new();
-	for id in live_group_ids(model) {
-		if !seen.insert(id.0) {
-			return Err(format!("duplicate live group id {}", id.0));
+	let mut groups = HashSet::new();
+	let mut panels = HashSet::new();
+	for c in &grid.cells {
+		if c.w < c.min_w || c.h < c.min_h {
+			return Err(format!("cell below its min: {c:?} (min {}x{})", c.min_w, c.min_h));
+		}
+		if c.x + c.w > cols {
+			return Err(format!("cell spills past cols={cols}: {c:?}"));
+		}
+		if c.group.tabs.is_empty() {
+			return Err(format!("empty group {:?}", c.group.id));
+		}
+		if c.group.active >= c.group.tabs.len() {
+			return Err(format!("active {} out of range (len {})", c.group.active, c.group.tabs.len()));
+		}
+		if !groups.insert(c.group.id.0) {
+			return Err(format!("duplicate group id {}", c.group.id.0));
+		}
+		for p in &c.group.tabs {
+			if !panels.insert(p.0.clone()) {
+				return Err(format!("duplicate panel id {}", p.0));
+			}
 		}
 	}
 
-	// Exact structural round-trip (ids, tabs, active, orientation, next_group_id, panels),
-	// but tolerant of sub-ULP size drift: serde_json's f64 round-trip is not bit-exact
-	// (a 50/50 split resized to 25.2941…6 reloads as …2), which is invisible under CSS
-	// flex %. Round both sides to 1e-6 — far finer than any layout cares — then compare.
-	let mut back = serial::load(&serial::save(model)).map_err(|e| format!("round-trip load failed: {e:?}"))?;
-	let mut want = model.clone();
-	if let Some(g) = back.grid.as_mut() {
-		round_sizes(g);
-	}
-	if let Some(g) = want.grid.as_mut() {
-		round_sizes(g);
-	}
-	if back != want {
-		return Err("round-trip changed the model beyond float precision".to_string());
+	let back = serial::load(&serial::save(grid)).map_err(|e| format!("round-trip load failed: {e:?}"))?;
+	if &back != grid {
+		return Err("round-trip changed the grid".to_string());
 	}
 	Ok(())
-}
-
-pub fn live_panels(model: &DockModel) -> Vec<String> {
-	let mut out = Vec::new();
-	if let Some(grid) = &model.grid {
-		for (_, g) in grid.leaves() {
-			out.extend(g.tabs.iter().map(|p| p.0.clone()));
-		}
-	}
-	for fg in &model.floating {
-		out.extend(fg.group.tabs.iter().map(|p| p.0.clone()));
-	}
-	out
-}
-fn round_sizes(node: &mut GridNode) {
-	if let GridNode::Branch { children, .. } = node {
-		for c in children.iter_mut() {
-			c.size = (c.size * 1e6).round() / 1e6;
-			round_sizes(&mut c.node);
-		}
-	}
-}
-
-fn invariants(node: &GridNode) -> Result<(), String> {
-	match node {
-		GridNode::Leaf(g) => {
-			if g.tabs.is_empty() {
-				return Err("empty group".to_string());
-			}
-			if g.active >= g.tabs.len() {
-				return Err(format!("active index {} out of range (len {})", g.active, g.tabs.len()));
-			}
-		}
-		GridNode::Branch { orientation, children } => {
-			if children.len() < 2 {
-				return Err(format!("branch has {} children (need ≥2)", children.len()));
-			}
-			let sum: f64 = children.iter().map(|c| c.size).sum();
-			if (sum - 100.0).abs() >= 1e-6 {
-				return Err(format!("branch sizes sum to {sum}, not 100"));
-			}
-			for c in children {
-				if let GridNode::Branch { orientation: o, .. } = &c.node {
-					if o == orientation {
-						return Err("same-orientation parent/child nesting".to_string());
-					}
-				}
-				invariants(&c.node)?;
-			}
-		}
-	}
-	Ok(())
-}
-
-fn live_group_ids(model: &DockModel) -> Vec<GroupId> {
-	let mut out = Vec::new();
-	if let Some(grid) = &model.grid {
-		out.extend(grid.leaves().into_iter().map(|(_, g)| g.id));
-	}
-	out.extend(model.floating.iter().map(|fg| fg.group.id));
-	out
 }

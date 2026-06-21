@@ -11,7 +11,9 @@ pub fn read(key: &str) -> Option<String> {
 /// Persist a layout JSON string under `key`.
 #[cfg(target_arch = "wasm32")]
 pub fn write(key: &str, json: &str) {
-	let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else { return };
+	let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+		return;
+	};
 	// A full/blocked localStorage is non-fatal: the layout just isn't persisted this tick.
 	let _ = storage.set_item(key, json);
 }

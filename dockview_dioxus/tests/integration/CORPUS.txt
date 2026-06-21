@@ -2,4 +2,5 @@
 # `fuzz` appends a minimal repro here automatically when it finds a NEW failure; fix the bug,
 # commit the new line, and `regressions` replays every entry forever. Do not hand-edit the
 # numbers unless you know what you're doing — the trailing comment is free-form context.
-0 33  # resize_pair inverted clamp range when a sibling pair summed to < 2·MIN_CHILD_PCT (fixed in splitview::resize_pair)
+11153199546900910226 16  # PANIC: panicked at dockview_dioxus/src/model/packed.rs:218:9: drop produced an overlap
+10355267663887020511 30  # PANIC: panicked at dockview_dioxus/src/model/packed.rs:103:9: resize left an overlap

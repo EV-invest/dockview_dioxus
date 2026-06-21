@@ -1,182 +1,116 @@
-//! State-aware action enum + generator. Every action drives a *real* `pub` reshaper on
-//! the live `DockModel`, and the generator enumerates only valid targets each step
-//! (matklad's "non-crashed replicas only") so no entropy is spent on impossible picks.
+//! State-aware action enum + generator. Every action drives a *real* `pub` op on the live
+//! [`PackedGrid`], and the generator enumerates only valid targets each step (matklad's
+//! "non-crashed replicas only") so no entropy is spent on impossible picks.
 
 use dockview_dioxus::{
 	GroupId,
-	geometry::Position,
-	math::Rect,
-	model::{DockModel, DragSource, GridNode, Group, Location, dnd::apply_drop, gridview::resize_branch},
+	model::packed::{DragSource, DropTarget},
 };
 
-use crate::frng::Frng;
-
-const POSITIONS: [Position; 5] = [Position::Top, Position::Bottom, Position::Left, Position::Right, Position::Center];
+use crate::{
+	frng::Frng,
+	sim::{COLS, World},
+};
 
 /// Action kinds, in the order their swarm weights are drawn.
 pub const N_KINDS: usize = 5;
-const DROP: usize = 0;
+const PLACE: usize = 0;
 const RESIZE: usize = 1;
-const ACTIVATE: usize = 2;
-const MOVE_TAB: usize = 3;
-const FLOAT: usize = 4;
+const ADD_TAB: usize = 2;
+const CLOSE: usize = 3;
+const DROP: usize = 4;
 
 #[derive(Clone, Debug)]
 pub enum Action {
-	Drop {
-		source: DragSource,
-		target: Location,
-		position: Position,
-	},
-	Resize {
-		parent: Location,
-		index: usize,
-		delta_pct: f64,
-	},
-	Activate {
-		loc: Location,
-		index: usize,
-	},
-	MoveTab {
-		loc: Location,
-		from: usize,
-		to: usize,
-	},
-	/// Detach a docked group to a floating overlay (re-dockable via a later `Drop`).
-	Float {
-		group: GroupId,
-	},
+	Place { w: u32, h: u32, min_w: u32, min_h: u32 },
+	Resize { idx: usize, new_w: u32, new_h: u32 },
+	AddTab { group: GroupId },
+	CloseActive { group: GroupId },
+	Drop { source: DragSource, target: DropTarget },
 }
 
-pub fn apply(action: &Action, model: &mut DockModel) {
+pub fn apply(action: &Action, world: &mut World) {
 	match action {
-		Action::Drop { source, target, position } => apply_drop(model, source.clone(), target, *position),
-		Action::Resize { parent, index, delta_pct } => {
-			resize_branch(model.grid.as_mut().expect("resize: grid exists"), parent, *index, *delta_pct);
+		Action::Place { w, h, min_w, min_h } => {
+			let gid = world.grid.mint_group_id();
+			let panel = world.mint_panel();
+			world.grid.place(dockview_dioxus::Group::new(gid, panel), *w, *h, (*min_w, *min_h), COLS);
 		}
-		Action::Activate { loc, index } => {
-			let GridNode::Leaf(g) = model.grid.as_mut().expect("activate: grid").at_mut(loc).expect("activate: loc resolves") else {
-				panic!("activate: target must be a leaf");
-			};
-			g.active = *index;
+		Action::Resize { idx, new_w, new_h } => world.grid.resize(*idx, *new_w, *new_h, COLS),
+		Action::AddTab { group } => {
+			let panel = world.mint_panel();
+			world.grid.add_tab(*group, panel);
 		}
-		Action::MoveTab { loc, from, to } => {
-			let GridNode::Leaf(g) = model.grid.as_mut().expect("move_tab: grid").at_mut(loc).expect("move_tab: loc resolves") else {
-				panic!("move_tab: target must be a leaf");
-			};
-			g.move_tab(*from, *to);
-		}
-		Action::Float { group } => model.float(
-			*group,
-			Rect {
-				x: 50.0,
-				y: 50.0,
-				width: 200.0,
-				height: 150.0,
-			},
-		),
+		Action::CloseActive { group } => world.grid.close_active(*group),
+		Action::Drop { source, target } => world.grid.drop(source.clone(), target.clone(), COLS),
 	}
 }
 
-/// Pick a valid action for the current `model`, weighting kinds by the per-run `weights`
-/// (swarm). Returns `None` when nothing is possible (the run then ends).
-pub fn generate(frng: &mut Frng, model: &DockModel, weights: &[u32; N_KINDS]) -> Option<Action> {
-	let grid = model.grid.as_ref()?;
-	let leaves = grid.leaves();
-	if leaves.is_empty() {
-		return None;
-	}
+/// Pick a valid action for the current `world`, weighting kinds by the per-run `weights`
+/// (swarm). Returns `None` only when the grid is empty and nothing but `Place` is possible but
+/// weighted out — the run then ends.
+pub fn generate(frng: &mut Frng, world: &World, weights: &[u32; N_KINDS]) -> Option<Action> {
+	let cells = &world.grid.cells;
 
-	let mut brs = Vec::new();
-	collect_branches(grid, &mut Vec::new(), &mut brs);
-	let multi_tab: Vec<(Location, &Group)> = leaves.iter().filter(|(_, g)| g.tabs.len() >= 2).map(|(l, g)| (l.clone(), *g)).collect();
-	// A drop needs a target leaf *and* a source from a different group: ≥2 leaves, or any float.
-	let drop_ok = leaves.len() >= 2 || !model.floating.is_empty();
-
-	let mut avail: Vec<usize> = Vec::new();
-	if drop_ok {
-		avail.push(DROP);
-	}
-	if !brs.is_empty() {
+	let mut avail = vec![PLACE]; // placing a fresh tile is always possible.
+	if !cells.is_empty() {
 		avail.push(RESIZE);
-	}
-	if !multi_tab.is_empty() {
-		avail.push(ACTIVATE);
-		avail.push(MOVE_TAB);
-	}
-	// Float detaches a docked leaf; always possible while the grid holds one.
-	avail.push(FLOAT);
-	if avail.is_empty() {
-		return None;
+		avail.push(ADD_TAB);
+		avail.push(CLOSE);
+		avail.push(DROP);
 	}
 
 	let ws: Vec<u32> = avail.iter().map(|&k| weights[k].max(1)).collect();
 	let kind = avail[frng.weighted(&ws)];
 
-	match kind {
-		DROP => {
-			let (target, tgt_group) = {
-				let (loc, g) = &leaves[frng.below(leaves.len() as u32) as usize];
-				(loc.clone(), g.id)
-			};
-			// Sources from any group *other than the target's* (the UI never drops a group on
-			// itself — that would detach the very leaf we re-home into).
-			let mut sources: Vec<DragSource> = Vec::new();
-			for (_, g) in &leaves {
-				if g.id == tgt_group {
-					continue;
-				}
-				sources.push(DragSource::Group(g.id));
-				for p in &g.tabs {
-					sources.push(DragSource::Tab { panel: p.clone(), from_group: g.id });
-				}
+	Some(match kind {
+		PLACE => {
+			let w = 1 + frng.below(4); // 1..=4, ≤ COLS
+			let h = 1 + frng.below(4);
+			Action::Place {
+				w,
+				h,
+				min_w: 1 + frng.below(w),
+				min_h: 1 + frng.below(h),
 			}
-			for fg in &model.floating {
-				sources.push(DragSource::Group(fg.group.id));
-				for p in &fg.group.tabs {
-					sources.push(DragSource::Tab {
-						panel: p.clone(),
-						from_group: fg.group.id,
-					});
-				}
-			}
-			let source = sources[frng.below(sources.len() as u32) as usize].clone();
-			let position = POSITIONS[frng.below(5) as usize];
-			Some(Action::Drop { source, target, position })
 		}
 		RESIZE => {
-			let (parent, count) = brs[frng.below(brs.len() as u32) as usize].clone();
-			let index = frng.below((count - 1) as u32) as usize;
-			let delta_pct = (frng.unit() * 2.0 - 1.0) * 60.0;
-			Some(Action::Resize { parent, index, delta_pct })
+			let idx = frng.below(cells.len() as u32) as usize;
+			Action::Resize {
+				idx,
+				new_w: 1 + frng.below(5),
+				new_h: 1 + frng.below(5),
+			}
 		}
-		ACTIVATE => {
-			let (loc, g) = &multi_tab[frng.below(multi_tab.len() as u32) as usize];
-			let index = frng.below(g.tabs.len() as u32) as usize;
-			Some(Action::Activate { loc: loc.clone(), index })
-		}
-		MOVE_TAB => {
-			let (loc, g) = &multi_tab[frng.below(multi_tab.len() as u32) as usize];
-			let from = frng.below(g.tabs.len() as u32) as usize;
-			let to = frng.below(g.tabs.len() as u32) as usize;
-			Some(Action::MoveTab { loc: loc.clone(), from, to })
-		}
-		FLOAT => {
-			let (_, g) = &leaves[frng.below(leaves.len() as u32) as usize];
-			Some(Action::Float { group: g.id })
+		ADD_TAB => Action::AddTab { group: pick_group(frng, world) },
+		CLOSE => Action::CloseActive { group: pick_group(frng, world) },
+		DROP => {
+			let source = {
+				let c = &cells[frng.below(cells.len() as u32) as usize];
+				// half the time tear a tab, else take the whole tile.
+				if frng.below(2) == 0 {
+					DragSource::Tab {
+						panel: c.group.tabs[frng.below(c.group.tabs.len() as u32) as usize].clone(),
+						from: c.group.id,
+					}
+				} else {
+					DragSource::Tile(c.group.id)
+				}
+			};
+			let target = match frng.below(3) {
+				0 => DropTarget::Tab(cells[frng.below(cells.len() as u32) as usize].group.id),
+				1 => {
+					let c = &cells[frng.below(cells.len() as u32) as usize];
+					DropTarget::Displace { x: c.x, y: c.y }
+				}
+				_ => DropTarget::Pack { x: frng.below(COLS) },
+			};
+			Action::Drop { source, target }
 		}
 		_ => unreachable!("kind is one of the constants pushed into `avail`"),
-	}
+	})
 }
 
-/// Every branch location with its child count (for splitter-resize targeting).
-fn collect_branches(node: &GridNode, path: &mut Location, out: &mut Vec<(Location, usize)>) {
-	if let GridNode::Branch { children, .. } = node {
-		out.push((path.clone(), children.len()));
-		for (i, c) in children.iter().enumerate() {
-			path.push(i);
-			collect_branches(&c.node, path, out);
-			path.pop();
-		}
-	}
+fn pick_group(frng: &mut Frng, world: &World) -> GroupId {
+	world.grid.cells[frng.below(world.grid.cells.len() as u32) as usize].group.id
 }
