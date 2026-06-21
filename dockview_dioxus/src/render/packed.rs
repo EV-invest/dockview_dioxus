@@ -104,14 +104,62 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let mut root_origin = use_signal(|| (0.0_f64, 0.0_f64));
 	// The pane keyboard ops act on: set when a tile's header/tab is pressed. `maximized` is a pure
 	// view toggle (no model mutation) — the focused tile fills the container, the rest are hidden.
-	let mut focused = use_signal(|| None::<GroupId>);
-	let mut maximized = use_signal(|| None::<GroupId>);
+	let focused = use_signal(|| None::<GroupId>);
+	let maximized = use_signal(|| None::<GroupId>);
 
-	// Undo history of *solid* layouts: a snapshot is captured only when the grid is at rest
-	// (no drag in flight, not mid-resize) and differs from the cursor's snapshot. Because
-	// restoring sets `grid` back to exactly `states[cursor]`, an undo/redo write is a no-op
-	// here — it won't re-record itself. A normal edit truncates any redo branch.
-	let mut history = use_signal(History::default);
+	// Undo history of *solid* layouts: a snapshot is captured (by the effect below) only when the
+	// grid is at rest — no drag in flight, not mid-resize — and differs from the cursor's snapshot.
+	// Because restoring sets `grid` back to exactly `states[cursor]`, an undo/redo write is a no-op
+	// for that effect (it won't re-record itself). A normal edit truncates any redo branch.
+	let mut undo = use_signal(UndoHistory::default);
+
+	// Keybinds are app-level: a `window` keydown listener, not an element `onkeydown` (which would
+	// only fire while the dock subtree holds DOM focus — it usually doesn't). `forget` leaks the
+	// closure so the listener lives for the whole app (this root-scope component never unmounts).
+	#[cfg(target_arch = "wasm32")]
+	use_hook(|| {
+		use wasm_bindgen::{JsCast, closure::Closure};
+		let handler = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+			let (mut grid, mut undo, mut focused, mut maximized, mut api) = (grid, undo, focused, maximized, api);
+			let kb = cfg.keybinds;
+			let (code, alt, shift, ctrl) = (e.code(), e.alt_key(), e.shift_key(), e.ctrl_key());
+			if kb.undo.matches(&code, alt, shift, ctrl) {
+				e.prevent_default();
+				if let Some(g) = undo.write().step(-1) {
+					*grid.write() = g;
+				}
+			} else if kb.redo.matches(&code, alt, shift, ctrl) {
+				e.prevent_default();
+				if let Some(g) = undo.write().step(1) {
+					*grid.write() = g;
+				}
+			} else if kb.close.matches(&code, alt, shift, ctrl) {
+				if let Some(g) = focused() {
+					e.prevent_default();
+					api.close_active(g);
+					// Dropped the last tab → the group is gone; don't leave focus/maximize on a dead id.
+					if !grid.read().cells.iter().any(|c| c.group.id == g) {
+						focused.set(None);
+						if maximized() == Some(g) {
+							maximized.set(None);
+						}
+					}
+				}
+			} else if kb.maximize.matches(&code, alt, shift, ctrl) {
+				let f = focused();
+				if f.is_some() {
+					e.prevent_default();
+					maximized.set(if maximized() == f { None } else { f });
+				}
+			}
+		});
+		let window = web_sys::window().expect("a browser window");
+		window
+			.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref())
+			.expect("add keydown listener");
+		handler.forget();
+	});
+
 	use_effect(move || {
 		if drag.read().is_some() {
 			return;
@@ -122,7 +170,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		if g.state != GridState::Settled || g.cells.is_empty() {
 			return;
 		}
-		let mut h = history.write();
+		let mut h = undo.write();
 		if h.states.get(h.cursor) == Some(&*g) {
 			return;
 		}
@@ -151,6 +199,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	use_context_provider(|| drag);
 	use_context_provider(|| view);
 	use_context_provider(|| PaneView { focused, maximized });
+	use_context_provider(|| cfg);
 	let mut root_handle = use_signal(|| None::<Rc<MountedData>>);
 	let mut ready = use_signal(|| false);
 
@@ -196,38 +245,6 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		style { dangerous_inner_html: CSS }
 		div {
 			class: "dv-packed",
-			tabindex: 0,
-			onkeydown: move |e: KeyboardEvent| {
-				let kb = cfg.keybinds;
-				if kb.undo.matches(&e) {
-					e.prevent_default();
-					if let Some(g) = history.write().step(-1) {
-						*grid.write() = g;
-					}
-				} else if kb.redo.matches(&e) {
-					e.prevent_default();
-					if let Some(g) = history.write().step(1) {
-						*grid.write() = g;
-					}
-				} else if kb.close.matches(&e) {
-					e.prevent_default();
-					if let Some(g) = focused() {
-						let mut api = api;
-						api.close_active(g);
-						// Dropped the last tab → the group is gone; don't leave focus/maximize on a dead id.
-						if !grid.read().cells.iter().any(|c| c.group.id == g) {
-							focused.set(None);
-							if maximized() == Some(g) {
-								maximized.set(None);
-							}
-						}
-					}
-				} else if kb.maximize.matches(&e) {
-					e.prevent_default();
-					let f = focused();
-					maximized.set(if maximized() == f { None } else { f });
-				}
-			},
 			onmounted: move |e| {
 				let h = e.data();
 				root_handle.set(Some(h.clone()));
@@ -315,12 +332,12 @@ struct PaneView {
 // ponytail: linear, not a branching tree — two keys (undo/redo) can only express a line. Promote
 // to a real tree once there's UI to pick a branch.
 #[derive(Default)]
-struct History {
+struct UndoHistory {
 	states: Vec<PackedGrid>,
 	cursor: usize,
 }
 
-impl History {
+impl UndoHistory {
 	fn push(&mut self, g: PackedGrid) {
 		if !self.states.is_empty() {
 			self.states.truncate(self.cursor + 1);
@@ -329,6 +346,8 @@ impl History {
 		self.cursor = self.states.len() - 1;
 	}
 
+	// Only the (web-only) keybind listener walks the history; `push` runs on every target.
+	#[cfg(target_arch = "wasm32")]
 	fn step(&mut self, dir: i32) -> Option<PackedGrid> {
 		let next = self.cursor.checked_add_signed(dir as isize)?;
 		let g = self.states.get(next)?.clone();

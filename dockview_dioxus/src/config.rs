@@ -14,12 +14,12 @@ pub struct Keybind {
 }
 
 impl Keybind {
-	pub(crate) fn matches(&self, e: &KeyboardData) -> bool {
-		let m = e.modifiers();
-		e.code() == self.code
-			&& m.contains(Modifiers::ALT) == self.alt
-			&& m.contains(Modifiers::SHIFT) == self.shift
-			&& m.contains(Modifiers::CONTROL) == self.ctrl
+	/// Matched against a raw DOM `KeyboardEvent`: `code` is the physical-key string (`"KeyZ"`,
+	/// `"Delete"`), which [`Code`]'s `Display` produces verbatim. Modifiers must match exactly,
+	/// so `Alt+Z` doesn't also fire on `Alt+Shift+Z`.
+	#[cfg(target_arch = "wasm32")]
+	pub(crate) fn matches(&self, code: &str, alt: bool, shift: bool, ctrl: bool) -> bool {
+		self.code.to_string() == code && self.alt == alt && self.shift == shift && self.ctrl == ctrl
 	}
 }
 
