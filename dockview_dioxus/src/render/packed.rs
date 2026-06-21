@@ -24,6 +24,7 @@ use dioxus::{html::input_data::MouseButton, prelude::*};
 
 use super::CSS;
 use crate::{
+	config::Config,
 	math::Rect,
 	model::{
 		Group, GroupId, PanelId,
@@ -92,7 +93,8 @@ impl PackedApi {
 /// - `on_ready`: invoked once with the [`PackedApi`] after the first measure (so seeds can
 ///   `place` against a real column count), letting a host script the initial tiles.
 #[component]
-pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<PackedApi>>) -> Element {
+pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<PackedApi>>, config: Option<Config>) -> Element {
+	let cfg = config.unwrap_or_default();
 	// Owned by the root, not this scope: `PackedApi` is handed to the host via `on_ready` and
 	// driven from outside `PackedArea`'s subtree, so the signals must outlive this component.
 	let mut grid = use_hook(|| Signal::new_in_scope(PackedGrid::default(), ScopeId::ROOT));
@@ -100,6 +102,32 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let api = PackedApi { grid, cols };
 	let mut drag = use_signal(|| None::<Drag>);
 	let mut root_origin = use_signal(|| (0.0_f64, 0.0_f64));
+	// The pane keyboard ops act on: set when a tile's header/tab is pressed. `maximized` is a pure
+	// view toggle (no model mutation) — the focused tile fills the container, the rest are hidden.
+	let mut focused = use_signal(|| None::<GroupId>);
+	let mut maximized = use_signal(|| None::<GroupId>);
+
+	// Undo history of *solid* layouts: a snapshot is captured only when the grid is at rest
+	// (no drag in flight, not mid-resize) and differs from the cursor's snapshot. Because
+	// restoring sets `grid` back to exactly `states[cursor]`, an undo/redo write is a no-op
+	// here — it won't re-record itself. A normal edit truncates any redo branch.
+	let mut history = use_signal(History::default);
+	use_effect(move || {
+		if drag.read().is_some() {
+			return;
+		}
+		let g = grid.read();
+		// `cells.is_empty()` skips the default grid before the host's seed lands, so undo can't
+		// walk back to a blank layout.
+		if g.state != GridState::Settled || g.cells.is_empty() {
+			return;
+		}
+		let mut h = history.write();
+		if h.states.get(h.cursor) == Some(&*g) {
+			return;
+		}
+		h.push(g.clone());
+	});
 
 	// The grid the skeleton/content actually render: the live preview while an armed drag is in
 	// flight (other tiles settled under a cloned `drop`), else the real grid. One `drop` path.
@@ -122,6 +150,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	use_context_provider(|| panels);
 	use_context_provider(|| drag);
 	use_context_provider(|| view);
+	use_context_provider(|| PaneView { focused, maximized });
 	let mut root_handle = use_signal(|| None::<Rc<MountedData>>);
 	let mut ready = use_signal(|| false);
 
@@ -167,6 +196,38 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		style { dangerous_inner_html: CSS }
 		div {
 			class: "dv-packed",
+			tabindex: 0,
+			onkeydown: move |e: KeyboardEvent| {
+				let kb = cfg.keybinds;
+				if kb.undo.matches(&e) {
+					e.prevent_default();
+					if let Some(g) = history.write().step(-1) {
+						*grid.write() = g;
+					}
+				} else if kb.redo.matches(&e) {
+					e.prevent_default();
+					if let Some(g) = history.write().step(1) {
+						*grid.write() = g;
+					}
+				} else if kb.close.matches(&e) {
+					e.prevent_default();
+					if let Some(g) = focused() {
+						let mut api = api;
+						api.close_active(g);
+						// Dropped the last tab → the group is gone; don't leave focus/maximize on a dead id.
+						if !grid.read().cells.iter().any(|c| c.group.id == g) {
+							focused.set(None);
+							if maximized() == Some(g) {
+								maximized.set(None);
+							}
+						}
+					}
+				} else if kb.maximize.matches(&e) {
+					e.prevent_default();
+					let f = focused();
+					maximized.set(if maximized() == f { None } else { f });
+				}
+			},
 			onmounted: move |e| {
 				let h = e.data();
 				root_handle.set(Some(h.clone()));
@@ -205,7 +266,11 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 							d.armed = true;
 						}
 						let (ox, oy) = root_origin();
-						d.target = Some(grid.read().resolve_target(c.x - ox, c.y - oy, STEP, CHROME_H, cols(), d.src_w));
+						// Reference the moving block's center (ghost top-left + half its size), not the raw
+						// pointer — the cell the block visibly covers is where it lands.
+						let cx = c.x - d.grab.0 + d.src_w as f64 * STEP / 2.0;
+						let cy = c.y - d.grab.1 + d.src_h as f64 * STEP / 2.0;
+						d.target = Some(grid.read().resolve_target(cx - ox, cy - oy, STEP, CHROME_H, cols(), d.src_w));
 						drag.set(Some(d));
 					},
 					onpointerup: move |_| {
@@ -235,6 +300,43 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		}
 	}
 }
+/// The keyboard-driven pane state, shared with the tiles via context: which group the pane ops
+/// target (`focused`), and which — if any — is maximized to fill the container (`maximized`, a
+/// pure view override that never touches the model).
+#[derive(Clone, Copy)]
+struct PaneView {
+	focused: Signal<Option<GroupId>>,
+	maximized: Signal<Option<GroupId>>,
+}
+
+/// Linear undo history of settled layouts with a cursor into it. `push` appends a fresh edit,
+/// dropping any redo branch ahead of the cursor; `step` walks the cursor by ±1 and returns the
+/// snapshot to restore (or `None` at an end).
+// ponytail: linear, not a branching tree — two keys (undo/redo) can only express a line. Promote
+// to a real tree once there's UI to pick a branch.
+#[derive(Default)]
+struct History {
+	states: Vec<PackedGrid>,
+	cursor: usize,
+}
+
+impl History {
+	fn push(&mut self, g: PackedGrid) {
+		if !self.states.is_empty() {
+			self.states.truncate(self.cursor + 1);
+		}
+		self.states.push(g);
+		self.cursor = self.states.len() - 1;
+	}
+
+	fn step(&mut self, dir: i32) -> Option<PackedGrid> {
+		let next = self.cursor.checked_add_signed(dir as isize)?;
+		let g = self.states.get(next)?.clone();
+		self.cursor = next;
+		Some(g)
+	}
+}
+
 /// An in-flight reposition: what was picked up, where the press began (client px, to measure
 /// the [`DRAG_THRESHOLD`]), the live pointer (to drag the ghost naturally), and — once `armed`
 /// — the live [`DropTarget`]. `src_w`/`src_h` size both the ghost and a `Pack` target's column
@@ -275,6 +377,7 @@ fn PackedFrame(idx: usize) -> Element {
 	let panels = use_context::<Signal<Vec<DockPanel>>>();
 	let view = use_context::<Memo<PackedGrid>>();
 	let mut drag = use_context::<Signal<Option<Drag>>>();
+	let PaneView { mut focused, maximized } = use_context::<PaneView>();
 	let request_tab = use_context::<Callback<GroupId>>();
 	let mut resize = use_signal(|| None::<ResizeStart>);
 
@@ -285,13 +388,17 @@ fn PackedFrame(idx: usize) -> Element {
 		let tabs: Vec<(PanelId, String)> = c.group.tabs.iter().map(|id| (id.clone(), titles.get(id).cloned().unwrap_or_default())).collect();
 		(c.group.id, c.x, c.y, c.w, c.h, tabs, c.group.active)
 	};
-	let style = format!(
-		"left:{}px; top:{}px; width:{}px; height:{}px;",
-		x as f64 * STEP,
-		y as f64 * STEP,
-		w as f64 * STEP,
-		h as f64 * STEP
-	);
+	// Maximize is a view-only override: the focused tile fills the container (its real grid rect is
+	// untouched), every other tile is omitted from the skeleton.
+	match *maximized.read() {
+		Some(mg) if mg != gid => return rsx! {},
+		_ => {}
+	}
+	let style = if *maximized.read() == Some(gid) {
+		"left:0; top:0; width:100%; height:100%;".to_string()
+	} else {
+		format!("left:{}px; top:{}px; width:{}px; height:{}px;", x as f64 * STEP, y as f64 * STEP, w as f64 * STEP, h as f64 * STEP)
+	};
 
 	// While a drag is armed, mark this cell if it's where the source lands (a grey shadow for
 	// Displace/Pack) or, for a Tab target, the group whose header is the drop site.
@@ -328,6 +435,7 @@ fn PackedFrame(idx: usize) -> Element {
 							return;
 						}
 						e.stop_propagation();
+						focused.set(Some(gid));
 						let c = e.client_coordinates();
 						let g = e.element_coordinates();
 						drag.set(Some(Drag { source: DragSource::Tile(gid), src_w: w, src_h: h, start: (c.x, c.y), grab: (g.x, g.y), cursor: (c.x, c.y), armed: false, target: None }));
@@ -343,6 +451,7 @@ fn PackedFrame(idx: usize) -> Element {
 										return;
 									}
 									e.stop_propagation();
+									focused.set(Some(gid));
 									let c = e.client_coordinates();
 									let g = e.element_coordinates();
 									drag.set(Some(Drag {
@@ -427,6 +536,7 @@ fn PackedContent() -> Element {
 	let view = use_context::<Memo<PackedGrid>>();
 	let panels = use_context::<Signal<Vec<DockPanel>>>();
 	let drag = use_context::<Signal<Option<Drag>>>();
+	let maximized = *use_context::<PaneView>().maximized.read();
 
 	// Panels carried by the floating ghost: hidden here so their live content rides the cursor's
 	// ghost, not the snapped grey shadow at the landing cell.
@@ -453,6 +563,7 @@ fn PackedContent() -> Element {
 				map.insert(
 					id.clone(),
 					Slot {
+						group: cell.group.id,
 						x: cell.x,
 						y: cell.y,
 						w: cell.w,
@@ -471,15 +582,17 @@ fn PackedContent() -> Element {
 			div {
 				key: "{panel.id.0}",
 				class: "dv-render-overlay",
-				style: if hidden.contains(&panel.id) { "display:none;".to_string() } else { host.get(&panel.id).map(Slot::style).unwrap_or_else(|| "display:none;".into()) },
+				style: if hidden.contains(&panel.id) { "display:none;".to_string() } else { host.get(&panel.id).map(|s| s.style(maximized)).unwrap_or_else(|| "display:none;".into()) },
 				{panel.content.clone()}
 			}
 		}
 	}
 }
 
-/// Where a panel's content sits: its host tile's grid rect plus whether it's the active tab.
+/// Where a panel's content sits: its host group, its host tile's grid rect, and whether it's the
+/// active tab.
 struct Slot {
+	group: GroupId,
 	x: u32,
 	y: u32,
 	w: u32,
@@ -490,8 +603,15 @@ struct Slot {
 impl Slot {
 	/// Inline style placing the content over the tile's body, from the grid rect — the same
 	/// math the skeleton uses, so the two cannot drift apart. Inactive tabs stay mounted but
-	/// `display:none`.
-	fn style(&self) -> String {
+	/// `display:none`. When a group is maximized, its active panel fills the container below the
+	/// chrome (matching the skeleton's maximized tile) and every other panel is hidden.
+	fn style(&self, maximized: Option<GroupId>) -> String {
+		if let Some(mg) = maximized {
+			if self.group != mg || !self.active {
+				return "display:none;".into();
+			}
+			return format!("display:block; left:0; top:{CHROME_H}px; width:100%; height:calc(100% - {CHROME_H}px);");
+		}
 		if !self.active {
 			return "display:none;".into();
 		}

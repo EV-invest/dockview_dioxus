@@ -14,12 +14,14 @@
 //! Tiles reposition by drag: pick up a titlebar or tear a tab, and a cloned `drop` previews
 //! the result live (other tiles settling, a shadow over the landing cell) before commit.
 
+pub mod config;
 pub mod math;
 pub mod model;
 pub mod panel;
 pub mod persist;
 pub mod render;
 
+pub use config::{Config, Keybind, Keybinds};
 pub use model::{
 	Group, GroupId, PanelId,
 	packed::{MinSize, PackedGrid, Step},
