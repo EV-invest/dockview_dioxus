@@ -21,14 +21,14 @@ impl Keybind {
 }
 
 /// Chords acting on the layout / the focused pane. Defaults: `u` / `U` for the undo tree,
-/// `Delete` to close the focused pane, `f` to toggle maximize on it, `?` for the keybind hint.
+/// `Backspace` to close the focused pane, `f` to toggle maximize on it, `?` for the keybind hint.
 /// They never fire while an editable field is focused (see the listener), so bare letters don't
 /// hijack typing.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Keybinds {
 	pub undo: Keybind = Keybind { key: "u", alt: false, ctrl: false },
 	pub redo: Keybind = Keybind { key: "U", alt: false, ctrl: false },
-	pub close: Keybind = Keybind { key: "Delete", alt: false, ctrl: false },
+	pub close: Keybind = Keybind { key: "Backspace", alt: false, ctrl: false },
 	pub maximize: Keybind = Keybind { key: "f", alt: false, ctrl: false },
 	pub help: Keybind = Keybind { key: "?", alt: false, ctrl: false },
 }
@@ -39,7 +39,11 @@ impl Default for Keybinds {
 	}
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Config {
 	pub keybinds: Keybinds,
+	/// Host-registered chords, each running arbitrary code over the live layout. Built-ins win on
+	/// collision (the listener tries them first); the closure gets the same [`PackedApi`] `on_ready`
+	/// hands out, so it can `save()` the current layout. A bare `Vec` is the whole API.
+	pub actions: Vec<(Keybind, dioxus::prelude::Callback<crate::render::packed::PackedApi>)>,
 }

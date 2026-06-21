@@ -54,6 +54,7 @@ ws.onmessage = (ev) => {
 	if (msg.method === 'Runtime.consoleAPICalled') {
 		const text = msg.params.args.map((a) => a.value ?? '').join(' ')
 		if (text.startsWith('PROBE')) probeLines.push(text)
+		if (text.startsWith('DV')) console.log('  [page log]', text)
 	}
 	// The lib's //dbg `alert(...)` shows up here; record + dismiss so the page doesn't block.
 	if (msg.method === 'Page.javascriptDialogOpening') {
@@ -107,7 +108,12 @@ await press('key "f"  @ code KeyP → maximize', { code: 'KeyP', key: 'f', vk: 8
 await press('key "f"  @ code KeyP → un-maximize', { code: 'KeyP', key: 'f', vk: 80 })
 await press('key "?"  @ code Slash → help', { code: 'Slash', key: '?', vk: 191, mods: MOD.Shift })
 await press('key "?"  @ code Slash → help off', { code: 'Slash', key: '?', vk: 191, mods: MOD.Shift })
-await press('Delete   → close', { code: 'Delete', key: 'Delete', vk: 46 })
+
+const tilesBefore = (await send('Runtime.evaluate', { expression: `document.querySelectorAll('.dv-tile').length`, returnByValue: true })).result.value
+await press('Delete   → close (counts tiles)', { code: 'Delete', key: 'Delete', vk: 46 })
+const tilesAfter = (await send('Runtime.evaluate', { expression: `document.querySelectorAll('.dv-tile').length`, returnByValue: true })).result.value
+console.log(`tiles: ${tilesBefore} → ${tilesAfter} ${tilesAfter < tilesBefore ? '✓ close removed a tile' : '✗ NOTHING CLOSED'}`)
+
 await press('key "j"  → unbound (expect prevented=false)', { code: 'KeyJ', key: 'j', vk: 74 })
 
 console.log('--- scope guard: focus an <input>, type into it ---')

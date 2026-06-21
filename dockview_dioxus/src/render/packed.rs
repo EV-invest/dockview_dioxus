@@ -121,9 +121,11 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	#[cfg(target_arch = "wasm32")]
 	use_hook(|| {
 		use wasm_bindgen::{JsCast, closure::Closure};
+		let kb = cfg.keybinds;
+		let actions = cfg.actions.clone();
 		let handler = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
 			// Don't hijack typing: ignore keys aimed at a form field / editable content, so a bare
-			// `u`/`F`/`Delete` bind only acts on the layout, never on text the user is entering.
+			// `u`/`f`/`Backspace` bind only acts on the layout, never on text the user is entering.
 			if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
 				if matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT") || el.dyn_ref::<web_sys::HtmlElement>().is_some_and(web_sys::HtmlElement::is_content_editable) {
 					return;
@@ -131,14 +133,9 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			}
 			let (mut grid, mut undo, mut focused, mut maximized, mut help) = (grid, undo, focused, maximized, help);
 			let mut api = api;
-			let kb = cfg.keybinds;
 			// `key` is the produced character (layout-aware), not the physical position; shift is
 			// already baked into it (`"u"` vs `"U"`), so `matches` only checks alt/ctrl.
 			let (key, alt, ctrl) = (e.key(), e.alt_key(), e.ctrl_key());
-			//dbg — reveal the produced string for non-text keys, to confirm what "Delete" sends.
-			if key.chars().count() > 1 && !matches!(key.as_str(), "Shift" | "Control" | "Alt" | "Meta") {
-				web_sys::window().expect("window").alert_with_message(&format!("dv key string = {key:?}")).expect("alert");
-			}
 			// Esc always dismisses the hint, regardless of the configured binds.
 			if help() && key == "Escape" {
 				e.prevent_default();
@@ -176,6 +173,14 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			} else if kb.help.matches(&key, alt, ctrl) {
 				e.prevent_default();
 				help.set(!help());
+			} else {
+				for (bind, run) in &actions {
+					if bind.matches(&key, alt, ctrl) {
+						e.prevent_default();
+						run.call(api);
+						break;
+					}
+				}
 			}
 		});
 		let window = web_sys::window().expect("a browser window");
@@ -224,7 +229,6 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	use_context_provider(|| drag);
 	use_context_provider(|| view);
 	use_context_provider(|| PaneView { focused, maximized });
-	use_context_provider(|| cfg);
 	let mut root_handle = use_signal(|| None::<Rc<MountedData>>);
 	let mut ready = use_signal(|| false);
 
@@ -276,6 +280,9 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	.into_iter()
 	.map(|(label, b)| (label, format!("{}{}{}", if b.ctrl { "Ctrl+" } else { "" }, if b.alt { "Alt+" } else { "" }, b.key)))
 	.collect();
+	// Cross-target sink for `cfg`: on non-wasm the keydown listener is absent, so this is the only
+	// consumer keeping `cfg` from orphaning into an unused-var warning.
+	use_context_provider(|| cfg);
 	rsx! {
 		style { dangerous_inner_html: CSS }
 		div {
@@ -656,6 +663,7 @@ fn PackedContent() -> Element {
 	let view = use_context::<Memo<PackedGrid>>();
 	let panels = use_context::<Signal<Vec<DockPanel>>>();
 	let drag = use_context::<Signal<Option<Drag>>>();
+	let mut focused = use_context::<PaneView>().focused;
 	let maximized = *use_context::<PaneView>().maximized.read();
 
 	// Panels carried by the floating ghost: hidden here so their live content rides the cursor's
@@ -703,6 +711,16 @@ fn PackedContent() -> Element {
 				key: "{panel.id.0}",
 				class: "dv-render-overlay",
 				style: if hidden.contains(&panel.id) { "display:none;".to_string() } else { host.get(&panel.id).map(|s| s.style(maximized)).unwrap_or_else(|| "display:none;".into()) },
+				// Clicking a pane's body focuses it too (not just its header/tab), so pane keybinds act
+				// on whichever pane you last interacted with.
+				onpointerdown: {
+					let group = host.get(&panel.id).map(|s| s.group);
+					move |_| {
+						if let Some(g) = group {
+							focused.set(Some(g));
+						}
+					}
+				},
 				{panel.content.clone()}
 			}
 		}

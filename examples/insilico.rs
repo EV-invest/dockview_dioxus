@@ -12,7 +12,7 @@
 //! - mock prices/quantities tick live while you interact.
 
 use dioxus::prelude::*;
-use dockview_dioxus::{DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId, Step, persist};
+use dockview_dioxus::{Config, DockPanel, Group, GroupId, Keybind, MinSize, PackedApi, PackedArea, PanelId, Step, persist};
 
 /// localStorage key the layout round-trips through (see `dockview_dioxus::persist`/`serial`).
 const STORAGE_KEY: &str = "insilico-layout";
@@ -114,6 +114,23 @@ fn spawn(kind: Kind, w: u32, h: u32, mut panels: Signal<Vec<DockPanel>>, mut cou
 	api.place(Group::new(gid, id), w, h, kind.min());
 }
 
+/// Host-registered chord: `Alt+S` notifies the user then stubs the "POST layout to server" pipe
+/// by reading the live layout JSON the closure's [`PackedApi`] hands it. Proof the hook runs
+/// arbitrary wasm and reaches the current layout — swap the `alert` for a real `fetch` to ship it.
+fn insilico_config() -> Config {
+	let save = Callback::new(|api: PackedApi| {
+		let msg = format!("Alt+S: would POST {} bytes of layout", api.save().len());
+		#[cfg(target_arch = "wasm32")]
+		web_sys::window().expect("a browser window").alert_with_message(&msg).expect("alert");
+		#[cfg(not(target_arch = "wasm32"))]
+		println!("{msg}");
+	});
+	Config {
+		actions: vec![(Keybind { key: "s", alt: true, ctrl: false }, save)],
+		..Default::default()
+	}
+}
+
 fn app() -> Element {
 	let panels = use_signal(Vec::<DockPanel>::new);
 	let counter = use_signal(|| 0u64);
@@ -198,7 +215,7 @@ fn app() -> Element {
 				}
 			}
 			div { style: "flex:1 1 auto; position:relative;",
-				PackedArea { panels, on_ready: Some(seed) }
+				PackedArea { panels, on_ready: Some(seed), config: Some(insilico_config()) }
 			}
 			if let Some(gid) = pending() {
 				CatalogPopup { gid, panels, counter, api, pending }
