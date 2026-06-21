@@ -1,6 +1,7 @@
 //! The contract checked after every *settled* step — independent of the implementation.
 //! The packed model's no-overlap guarantee holds only while [`GridState::Settled`], so the
-//! oracle asserts: the grid is settled and overlap-free, every cell honours its per-type
+//! oracle asserts: the grid is settled, overlap-free and gap-free (no tile floats above the
+//! skyline), every cell honours its per-type
 //! minimum and stays within `cols`, every group is non-empty with `active` in range, ids and
 //! panels are unique, and the layout survives a serde round-trip. Returns `Err(reason)` rather
 //! than panicking so the minimizer survives a violation (production `expect`/`unreachable`
@@ -19,6 +20,9 @@ pub fn check(grid: &PackedGrid, cols: u32) -> Result<(), String> {
 	}
 	if let Some((i, j)) = grid.overlaps() {
 		return Err(format!("overlap: {:?} vs {:?}", grid.cells[i], grid.cells[j]));
+	}
+	if let Some(i) = grid.unsupported() {
+		return Err(format!("floating tile (gap above): {:?}", grid.cells[i]));
 	}
 
 	let mut groups = HashSet::new();

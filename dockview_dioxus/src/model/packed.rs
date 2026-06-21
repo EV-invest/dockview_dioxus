@@ -138,12 +138,27 @@ impl PackedGrid {
 		None
 	}
 
-	/// Invariant a settled grid must hold: no two tiles (hence no two contents) overlap. The
-	/// fuzz oracle calls this whenever [`state`](PackedGrid::state) is [`GridState::Settled`].
+	/// First tile (by index) that floats: at `y > 0` yet resting on nothing — no other tile
+	/// shares one of its columns with a bottom edge touching its top. [`gravity`] forbids this;
+	/// a settled tile is at `y == 0` or sits on the skyline directly beneath it. A free-floating
+	/// tile with a gap above it (nothing overlaps, but it should have risen) is caught here.
+	pub fn unsupported(&self) -> Option<usize> {
+		(0..self.cells.len()).find(|&i| {
+			let c = &self.cells[i];
+			c.y > 0 && !self.cells.iter().enumerate().any(|(j, o)| j != i && o.x < c.x + c.w && c.x < o.x + o.w && o.y + o.h == c.y)
+		})
+	}
+
+	/// Invariant a settled grid must hold: no two tiles (hence no two contents) overlap, and no
+	/// tile floats above the skyline. The fuzz oracle calls this whenever
+	/// [`state`](PackedGrid::state) is [`GridState::Settled`].
 	pub fn assert_packed(&self) {
 		assert_eq!(self.state, GridState::Settled, "assert_packed on a mid-gesture grid");
 		if let Some((i, j)) = self.overlaps() {
 			panic!("overlap: {:?} vs {:?}", self.cells[i], self.cells[j]);
+		}
+		if let Some(i) = self.unsupported() {
+			panic!("floating tile (gap above): {:?}", self.cells[i]);
 		}
 	}
 
@@ -165,19 +180,20 @@ impl PackedGrid {
 	///   at/below that row in this span (so it works above and outside the tiles, past the
 	///   container's edge), else [`Pack`](DropTarget::Pack) onto the skyline (empty below).
 	pub fn resolve_target(&self, px: f64, py: f64, step: f64, chrome: f64, cols: u32, src_w: u32) -> DropTarget {
-		let clamp = |x: u32| x.min(cols.saturating_sub(src_w));
+		let col = ((px / step).floor().max(0.0) as u32).min(cols.saturating_sub(src_w));
 		for c in &self.cells {
 			let (l, t) = (c.x as f64 * step, c.y as f64 * step);
 			let (r, b) = ((c.x + c.w) as f64 * step, (c.y + c.h) as f64 * step);
 			if px >= l && px < r && py >= t && py < b {
+				// Header ⇒ join; body ⇒ shadow at the row below this tile (so it stays put), but at
+				// the pointer's own column — the x tracks the cursor exactly as it does in open space.
 				return if py < t + chrome {
 					DropTarget::Tab(c.group.id)
 				} else {
-					DropTarget::Displace { x: clamp(c.x), y: c.y + c.h }
+					DropTarget::Displace { x: col, y: c.y + c.h }
 				};
 			}
 		}
-		let col = clamp((px / step).floor().max(0.0) as u32);
 		let row = (py / step).floor().max(0.0) as u32;
 		if row < skyline(&self.cells, col, src_w) {
 			DropTarget::Displace { x: col, y: row }
@@ -301,29 +317,28 @@ fn skyline(cells: &[Cell], x: u32, w: u32) -> u32 {
 }
 
 /// Settle the grid by pulling every tile upward until it rests on the skyline of the tiles
-/// above it in its columns — gravity toward the top. Processing top-to-bottom, each tile's
-/// new `y` is the max bottom of the already-placed tiles sharing any of its columns (else 0);
-/// `x`/size never change. `pin` (the tile under an active resize grip, or a freshly dropped
-/// shadow) does **not** rise — it holds its `y` and so stays an obstacle, so growing it pushes
-/// lower tiles down and shrinking it lets them rise. It *can* still be pushed *down*: widening
-/// it into a column where a taller upper neighbour hangs below its top would otherwise overlap,
-/// so the pin takes `max(its y, that column skyline)`. With `pin = None` (after a close) the
-/// whole stack compacts up the freed space. The pin sorts before every other tile at the same
-/// `y` (ahead of `x`), so a `Displace` shadow becomes the prior obstacle for *all* its
-/// row-peers — including ones to its left it widened over — shoving them down, not overlapping.
+/// above it in its columns — gravity toward the top. Processing top-to-bottom, each tile's new
+/// `y` is the max bottom of the already-placed tiles sharing any of its columns (else 0); `x`/
+/// size never change. Nothing is ever left hanging: a tile with empty space above it always
+/// rises into it. `pin` (the tile under an active resize grip, or a freshly dropped shadow)
+/// settles by this same rule — it is *not* held in place — but it sorts **ahead** of every tile
+/// at the same starting `y` (before the `x` tiebreak), so it claims its row first and all its
+/// row-peers settle onto *its* skyline. That ordering is the whole point of the pin: it makes a
+/// `Displace` shadow shove its row's tiles below it (rather than yielding to them) and a resize
+/// grip push the stack below it down as it grows. With `pin = None` (after a close) every tile
+/// is equal and the stack just compacts up into the freed space.
 fn gravity(cells: &mut [Cell], pin: Option<usize>) {
 	let mut order: Vec<usize> = (0..cells.len()).collect();
 	order.sort_by_key(|&i| (cells[i].y, (Some(i) != pin) as u8, cells[i].x));
 	for k in 0..order.len() {
 		let i = order[k];
 		let (x, w) = (cells[i].x, cells[i].w);
-		let floor = order[..k]
+		cells[i].y = order[..k]
 			.iter()
 			.filter(|&&j| cells[j].x < x + w && x < cells[j].x + cells[j].w)
 			.map(|&j| cells[j].y + cells[j].h)
 			.max()
 			.unwrap_or(0);
-		cells[i].y = if Some(i) == pin { cells[i].y.max(floor) } else { floor };
 	}
 }
 
