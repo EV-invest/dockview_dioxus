@@ -17,6 +17,7 @@ pub mod drop_overlay;
 pub mod floating;
 pub mod grid;
 pub mod group;
+pub mod icons;
 
 use std::collections::HashMap;
 
@@ -53,6 +54,7 @@ const CSS: &str = r#"
 .dv-action { cursor: pointer; border: 0; background: transparent; color: var(--dv-fg, #ddd);
 	opacity: 0.55; padding: 0 5px; font: inherit; line-height: 1; }
 .dv-action:hover { opacity: 1; background: var(--dv-tab-bg, #2d2d2d); }
+.dv-icon { width: 0.85em; height: 0.85em; display: block; fill: currentColor; }
 .dv-tabstrip { flex: 0 0 auto; display: flex; overflow-x: auto;
 	background: var(--dv-tabstrip-bg, #2d2d2d); }
 .dv-tab { padding: 4px 12px; white-space: nowrap; cursor: pointer;

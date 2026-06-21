@@ -122,7 +122,10 @@ pub fn GroupFrame(addr: GroupAddr) -> Element {
 									m.maximized = (m.maximized.as_ref() != Some(&loc)).then(|| loc.clone());
 								}
 							},
-							if is_max { "⤡" } else { "⤢" }
+							{
+								let (view_box, d) = if is_max { crate::render::icons::MINIMIZE } else { crate::render::icons::MAXIMIZE };
+								rsx! { svg { class: "dv-icon", view_box, path { d } } }
+							}
 						}
 					}
 				}

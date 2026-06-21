@@ -94,8 +94,9 @@
               dioxus-cli
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
-						env.RUST_BACKTRACE = 1;
-						env.RUST_LIB_BACKTRACE = 0;
+            env.RUST_BACKTRACE = 1;
+            env.RUST_LIB_BACKTRACE = 0;
+            env.DIOXUS_DEVSERVER_PORT = 54580;
           };
       }
     );
