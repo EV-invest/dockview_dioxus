@@ -46,4 +46,9 @@ pub struct Config {
 	/// collision (the listener tries them first); the closure gets the same [`PackedApi`] `on_ready`
 	/// hands out, so it can `save()` the current layout. A bare `Vec` is the whole API.
 	pub actions: Vec<(Keybind, dioxus::prelude::Callback<crate::render::packed::PackedApi>)>,
+	/// How many grid steps span the container's width. Fixed (not derived from font size): the
+	/// rendered step is `container_width / steps`, so the layout always stretches to fill — wider
+	/// container ⇒ bigger steps, narrower ⇒ smaller, the same tiles either way. A finer grid (more
+	/// steps) gives smaller resize/placement increments.
+	pub steps: u32 = 64,
 }

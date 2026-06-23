@@ -185,18 +185,18 @@ fn app() -> Element {
 				return;
 			}
 		}
-		spawn(Kind::Watchlist, 3, 4, panels, counter, a);
-		spawn(Kind::Positions, 4, 3, panels, counter, a);
-		spawn(Kind::OrderBook, 3, 5, panels, counter, a);
-		spawn(Kind::Chart, 5, 4, panels, counter, a);
+		spawn(Kind::Watchlist, 12, 16, panels, counter, a);
+		spawn(Kind::Positions, 16, 12, panels, counter, a);
+		spawn(Kind::OrderBook, 12, 20, panels, counter, a);
+		spawn(Kind::Chart, 20, 16, panels, counter, a);
 	});
 
 	let add_random = move |_| {
 		let Some(a) = api() else { return };
 		let mut s = counter().wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(0xd1b5);
 		let kind = Kind::ALL[xorshift(&mut s) as usize % Kind::ALL.len()];
-		let w = 2 + (xorshift(&mut s) % 4) as u32; // 2..=5
-		let h = 2 + (xorshift(&mut s) % 3) as u32; // 2..=4
+		let w = 8 + (xorshift(&mut s) % 16) as u32; // 8..=23
+		let h = 8 + (xorshift(&mut s) % 12) as u32; // 8..=19
 		spawn(kind, w, h, panels, counter, a);
 	};
 
