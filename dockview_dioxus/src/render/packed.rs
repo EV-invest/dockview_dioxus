@@ -34,9 +34,12 @@ use crate::{
 	panel::DockPanel,
 };
 
-/// Px per [`Step`](crate::model::packed::Step) — the min resize/snap increment.
-const STEP: f64 = 120.0;
-/// Approx root font size; resolves a type's rem-expressed [`MinSize`] to whole steps.
+/// Base tile unit, in **rem** so it tracks the root font size (pixels are only the unavoidable
+/// bridge for pointer math). Rendered px-per-step is `STEP_REM × REM_PX`, optionally shrunk by the
+/// horizontal fit-to-width factor — never grown, never derived from the vertical axis.
+const STEP_REM: f64 = 7.5;
+/// Approx root font size; bridges rem ⇄ px for pointer hit-testing and resolves a type's
+/// rem/px-expressed [`MinSize`] to whole steps.
 const REM_PX: f64 = 16.0;
 /// Fixed header-bar height (CSS pins it); content starts below it.
 const CHROME_H: f64 = 32.0;
@@ -55,7 +58,7 @@ pub struct PackedApi {
 impl PackedApi {
 	pub fn place(&mut self, group: Group, w: u32, h: u32, min: MinSize) {
 		let cols = (self.cols)();
-		self.grid.write().place(group, w, h, min.resolve(STEP, REM_PX), cols);
+		self.grid.write().place(group, w, h, min.resolve(STEP_REM * REM_PX, REM_PX), cols);
 	}
 
 	pub fn add_tab(&mut self, group: GroupId, panel: PanelId) {
@@ -84,6 +87,11 @@ impl PackedApi {
 	}
 }
 
+/// The live render unit (rem per step) shared with every tile, the content overlay and the drag
+/// math via context, so all three scale together. px-per-step is this × [`REM_PX`].
+#[derive(Clone, Copy)]
+struct StepRem(Signal<f64>);
+
 /// Root of the packed layout. Owns the `Signal<PackedGrid>`, measures only its own width
 /// (→ `cols = floor(width / STEP)`) and top-left origin (to map pointer→grid space), provides
 /// [`PackedApi`]/the panels signal/the drag signal/the preview `view` via context, and stacks
@@ -102,6 +110,9 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let api = PackedApi { grid, cols };
 	let mut drag = use_signal(|| None::<Drag>);
 	let mut root_origin = use_signal(|| (0.0_f64, 0.0_f64));
+	let mut root_width = use_signal(|| 0.0_f64);
+	// Rem-per-step the whole render uses; recomputed by the fit effect below.
+	let mut step_rem = use_signal(|| STEP_REM);
 	// The pane keyboard ops act on: set when a tile's header/tab is pressed. `maximized` is a pure
 	// view toggle (no model mutation) — the focused tile fills the container, the rest are hidden.
 	let focused = use_signal(|| None::<GroupId>);
@@ -230,6 +241,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	use_context_provider(|| panels);
 	use_context_provider(|| drag);
 	use_context_provider(|| view);
+	use_context_provider(|| StepRem(step_rem));
 	use_context_provider(|| PaneView { focused, maximized });
 	let mut root_handle = use_signal(|| None::<Rc<MountedData>>);
 	let mut ready = use_signal(|| false);
@@ -249,10 +261,27 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let measure = move |h: Rc<MountedData>| async move {
 		if let Ok(rect) = h.get_client_rect().await {
 			let r: Rect = rect.into();
-			cols.set((r.width / STEP).floor() as u32);
+			root_width.set(r.width);
 			root_origin.set((r.x, r.y));
 		}
 	};
+
+	// Horizontal fit-to-width, shrink-only. The model is a fixed rem grid; when a saved layout is
+	// wider than the container (e.g. the user zoomed in, so fewer CSS px fit) it scales the rendered
+	// step down so the content just spans the width. Never scales up — narrower layouts keep their
+	// whitespace — and the vertical axis is never fitted (it scrolls). `cols` derives from the same
+	// step so placement and drag math agree with what's drawn.
+	use_effect(move || {
+		let width = root_width();
+		if width <= 0.0 {
+			return;
+		}
+		let used = grid.read().cells.iter().map(|c| c.x + c.w).max().unwrap_or(0) as f64;
+		let base = STEP_REM * REM_PX;
+		let scale = if used > 0.0 { (width / (used * base)).min(1.0) } else { 1.0 };
+		step_rem.set(STEP_REM * scale);
+		cols.set((width / (base * scale)).floor() as u32);
+	});
 
 	// The floating ghost of whatever is being dragged: it tracks the pointer 1:1 (`cursor − grab`),
 	// keeping the grabbed point under the cursor, while its shadow snaps to the landing cell.
@@ -268,7 +297,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 				.unwrap_or_default(),
 			DragSource::Tab { panel, .. } => titles.get(panel).cloned().unwrap_or_default(),
 		};
-		(title, d.cursor.0 - d.grab.0, d.cursor.1 - d.grab.1, d.src_w as f64 * STEP, d.src_h as f64 * STEP)
+		(title, d.cursor.0 - d.grab.0, d.cursor.1 - d.grab.1, d.src_w as f64 * step_rem(), d.src_h as f64 * step_rem())
 	});
 
 	let ids: Vec<u64> = view.read().cells.iter().map(|c| c.group.id.0).collect();
@@ -329,9 +358,10 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 						let (ox, oy) = root_origin();
 						// Reference the moving block's center (ghost top-left + half its size), not the raw
 						// pointer — the cell the block visibly covers is where it lands.
-						let cx = c.x - d.grab.0 + d.src_w as f64 * STEP / 2.0;
-						let cy = c.y - d.grab.1 + d.src_h as f64 * STEP / 2.0;
-						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, STEP, CHROME_H, cols(), d.src_w, d.src_h);
+						let step = step_rem() * REM_PX;
+							let cx = c.x - d.grab.0 + d.src_w as f64 * step / 2.0;
+						let cy = c.y - d.grab.1 + d.src_h as f64 * step / 2.0;
+						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, step, CHROME_H, cols(), d.src_w, d.src_h);
 						// The model can only append (it has no tab geometry); refine the slot from the live
 						// preview's tab rects, skipping the ghost's own tab(s) so we read the source-free order.
 						if let DropTarget::Tab { group, index } = t {
@@ -364,7 +394,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 				}
 			}
 			if let Some((title, left, top, gw, gh)) = ghost {
-				div { class: "dv-ghost", style: "left:{left}px; top:{top}px; width:{gw}px; height:{gh}px;",
+				div { class: "dv-ghost", style: "left:{left}px; top:{top}px; width:{gw}rem; height:{gh}rem;",
 					div { class: "dv-header", div { class: "dv-tab dv-active", "{title}" } }
 				}
 			}
@@ -500,6 +530,7 @@ fn PackedFrame(idx: usize) -> Element {
 	let mut drag = use_context::<Signal<Option<Drag>>>();
 	let PaneView { mut focused, maximized } = use_context::<PaneView>();
 	let request_tab = use_context::<Callback<GroupId>>();
+	let step = use_context::<StepRem>().0;
 	let mut resize = use_signal(|| None::<ResizeStart>);
 
 	let titles: HashMap<PanelId, String> = panels.read().iter().map(|p| (p.id.clone(), p.title.clone())).collect();
@@ -518,12 +549,13 @@ fn PackedFrame(idx: usize) -> Element {
 	let style = if *maximized.read() == Some(gid) {
 		"left:0; top:0; width:100%; height:100%;".to_string()
 	} else {
+		let sr = step();
 		format!(
-			"left:{}px; top:{}px; width:{}px; height:{}px;",
-			x as f64 * STEP,
-			y as f64 * STEP,
-			w as f64 * STEP,
-			h as f64 * STEP
+			"left:{}rem; top:{}rem; width:{}rem; height:{}rem;",
+			x as f64 * sr,
+			y as f64 * sr,
+			w as f64 * sr,
+			h as f64 * sr
 		)
 	};
 
@@ -635,8 +667,9 @@ fn PackedFrame(idx: usize) -> Element {
 					onpointermove: move |e: PointerEvent| {
 						let Some(s) = resize() else { return };
 						let c = e.client_coordinates();
-						let dw = ((c.x - s.px) / STEP).round() as i64;
-						let dh = ((c.y - s.py) / STEP).round() as i64;
+						let step_px = step() * REM_PX;
+							let dw = ((c.x - s.px) / step_px).round() as i64;
+						let dh = ((c.y - s.py) / step_px).round() as i64;
 						let nw = (s.w as i64 + dw).max(1) as u32;
 						let nh = (s.h as i64 + dh).max(1) as u32;
 						api.resize(idx, nw, nh);
@@ -667,6 +700,7 @@ fn PackedContent() -> Element {
 	let drag = use_context::<Signal<Option<Drag>>>();
 	let mut focused = use_context::<PaneView>().focused;
 	let maximized = *use_context::<PaneView>().maximized.read();
+	let sr = use_context::<StepRem>().0;
 
 	// Panels carried by the floating ghost: hidden here so their live content rides the cursor's
 	// ghost, not the snapped grey shadow at the landing cell.
@@ -712,7 +746,7 @@ fn PackedContent() -> Element {
 			div {
 				key: "{panel.id.0}",
 				class: "dv-render-overlay",
-				style: if hidden.contains(&panel.id) { "display:none;".to_string() } else { host.get(&panel.id).map(|s| s.style(maximized)).unwrap_or_else(|| "display:none;".into()) },
+				style: if hidden.contains(&panel.id) { "display:none;".to_string() } else { host.get(&panel.id).map(|s| s.style(maximized, sr())).unwrap_or_else(|| "display:none;".into()) },
 				// Clicking a pane's body focuses it too (not just its header/tab), so pane keybinds act
 				// on whichever pane you last interacted with.
 				onpointerdown: {
@@ -745,7 +779,7 @@ impl Slot {
 	/// math the skeleton uses, so the two cannot drift apart. Inactive tabs stay mounted but
 	/// `display:none`. When a group is maximized, its active panel fills the container below the
 	/// chrome (matching the skeleton's maximized tile) and every other panel is hidden.
-	fn style(&self, maximized: Option<GroupId>) -> String {
+	fn style(&self, maximized: Option<GroupId>, step_rem: f64) -> String {
 		if let Some(mg) = maximized {
 			if self.group != mg || !self.active {
 				return "display:none;".into();
@@ -755,8 +789,10 @@ impl Slot {
 		if !self.active {
 			return "display:none;".into();
 		}
-		let (left, top) = (self.x as f64 * STEP, self.y as f64 * STEP + CHROME_H);
-		let (width, height) = (self.w as f64 * STEP, (self.h as f64 * STEP - CHROME_H).max(0.0));
-		format!("display:block; left:{left}px; top:{top}px; width:{width}px; height:{height}px;")
+		// Tiles scale in rem; the chrome band stays a fixed px (the header CSS pins it), so the
+		// content's top/height bridge the two with `calc`.
+		let (left, top) = (self.x as f64 * step_rem, self.y as f64 * step_rem);
+		let (width, height) = (self.w as f64 * step_rem, self.h as f64 * step_rem);
+		format!("display:block; left:{left}rem; top:calc({top}rem + {CHROME_H}px); width:{width}rem; height:calc({height}rem - {CHROME_H}px);")
 	}
 }
