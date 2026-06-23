@@ -49,16 +49,17 @@ const DRAG_THRESHOLD: f64 = 4.0;
 pub struct PackedApi {
 	pub grid: Signal<PackedGrid>,
 	pub cols: Signal<u32>,
-	/// Live px-per-step (`container_width / cols`), the unit [`MinSize::Rem`] resolves against.
-	pub step_px: Signal<f64>,
+	/// Live px-per-step on each axis (`width / cols`, `height / rows`), the units [`MinSize::Rem`]
+	/// resolves against.
+	pub step_px: Signal<(f64, f64)>,
 }
 
 impl PackedApi {
 	pub fn place(&mut self, group: Group, w: u32, h: u32, min: MinSize) {
 		let cols = (self.cols)();
-		let step_px = (self.step_px)();
-		assert!(step_px > 0.0, "place before the first measure: no step size yet");
-		self.grid.write().place(group, w, h, min.resolve(step_px, REM_PX), cols);
+		let (step_w, step_h) = (self.step_px)();
+		assert!(step_w > 0.0 && step_h > 0.0, "place before the first measure: no step size yet");
+		self.grid.write().place(group, w, h, min.resolve(step_w, step_h, REM_PX), cols);
 	}
 
 	pub fn add_tab(&mut self, group: GroupId, panel: PanelId) {
@@ -87,34 +88,31 @@ impl PackedApi {
 	}
 }
 
-/// The live render unit (**px** per step) shared with every tile, the content overlay and the drag
-/// math via context, so all three scale together. It is `container_width / cols`.
-#[derive(Clone, Copy)]
-struct StepPx(Signal<f64>);
-
-/// Root of the packed layout. Owns the `Signal<PackedGrid>`, measures only its own width
-/// (→ `cols = floor(width / STEP)`) and top-left origin (to map pointer→grid space), provides
-/// [`PackedApi`]/the panels signal/the drag signal/the preview `view` via context, and stacks
-/// the tile skeleton over the content overlay.
+/// Root of the packed layout. Owns the `Signal<PackedGrid>`, measures its own size (→ the per-axis
+/// step px that stretches the fixed `cols × rows` grid to fill it) and top-left origin (to map
+/// pointer→grid space), provides [`PackedApi`]/the panels signal/the drag signal/the preview `view`
+/// via context, and stacks the tile skeleton over the content overlay.
 ///
 /// - `panels` is a `Signal` so windows spawned at runtime appear in the overlay.
 /// - `on_ready`: invoked once with the [`PackedApi`] after the first measure (so seeds can
-///   `place` against a real column count), letting a host script the initial tiles.
+///   `place` against a real step size), letting a host script the initial tiles.
 #[component]
 pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<PackedApi>>, config: Option<Config>) -> Element {
 	let cfg = config.unwrap_or_default();
 	let steps = cfg.steps.max(1);
+	let rows = cfg.rows.max(1);
 	// Owned by the root, not this scope: `PackedApi` is handed to the host via `on_ready` and
 	// driven from outside `PackedArea`'s subtree, so the signals must outlive this component.
 	let mut grid = use_hook(|| Signal::new_in_scope(PackedGrid::default(), ScopeId::ROOT));
 	// Fixed column count from the config: the grid always spans these, stretching the step size.
 	let cols = use_hook(|| Signal::new_in_scope(steps, ScopeId::ROOT));
-	// Px-per-step the whole render uses; recomputed by the fit effect below. 0 until first measure.
-	let mut step_px = use_hook(|| Signal::new_in_scope(0.0_f64, ScopeId::ROOT));
+	// Px-per-step on each axis the whole render uses; recomputed by the fit effect below. (0, 0)
+	// until first measure.
+	let mut step_px = use_hook(|| Signal::new_in_scope((0.0_f64, 0.0_f64), ScopeId::ROOT));
 	let api = PackedApi { grid, cols, step_px };
 	let mut drag = use_signal(|| None::<Drag>);
 	let mut root_origin = use_signal(|| (0.0_f64, 0.0_f64));
-	let mut root_width = use_signal(|| 0.0_f64);
+	let mut root_size = use_signal(|| (0.0_f64, 0.0_f64));
 	// The pane keyboard ops act on: set when a tile's header/tab is pressed. `maximized` is a pure
 	// view toggle (no model mutation) — the focused tile fills the container, the rest are hidden.
 	let focused = use_signal(|| None::<GroupId>);
@@ -251,7 +249,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	// Seed once, but only after the first measure lands a real step size — `place` resolves a
 	// type's rem [`MinSize`] against it, so seeding before the measure would have no scale.
 	use_effect(move || {
-		if ready() || step_px() <= 0.0 {
+		if ready() || step_px().0 <= 0.0 {
 			return;
 		}
 		if let Some(cb) = on_ready {
@@ -263,21 +261,22 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let measure = move |h: Rc<MountedData>| async move {
 		if let Ok(rect) = h.get_client_rect().await {
 			let r: Rect = rect.into();
-			root_width.set(r.width);
+			root_size.set((r.width, r.height));
 			root_origin.set((r.x, r.y));
 		}
 	};
 
-	// Stretch the fixed `cols` grid across the container's width: one step is `width / cols`, so the
-	// layout always spans the full width — grows when the container widens (e.g. zooming out, more CSS
-	// px), shrinks when it narrows, the same tiles either way. The vertical axis uses the same step
-	// (heights scale with it) and scrolls if the stack runs past the viewport.
+	// Stretch the fixed `cols × rows` grid across the container on both axes: a horizontal step is
+	// `width / cols`, a vertical one `height / rows`, so the layout always spans the full container —
+	// each tile's width tracks the container's width and its height tracks the container's height
+	// (widen ⇒ wider tiles, shorten ⇒ shorter tiles). Dividing by the fixed counts (not the used
+	// extent) keeps the whitespace a shorter/narrower layout leaves around itself.
 	use_effect(move || {
-		let width = root_width();
-		if width <= 0.0 {
+		let (width, height) = root_size();
+		if width <= 0.0 || height <= 0.0 {
 			return;
 		}
-		step_px.set(width / cols() as f64);
+		step_px.set((width / cols() as f64, height / rows as f64));
 	});
 
 	// The floating ghost of whatever is being dragged: it tracks the pointer 1:1 (`cursor − grab`),
@@ -294,7 +293,8 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 				.unwrap_or_default(),
 			DragSource::Tab { panel, .. } => titles.get(panel).cloned().unwrap_or_default(),
 		};
-		(title, d.cursor.0 - d.grab.0, d.cursor.1 - d.grab.1, d.src_w as f64 * step_px(), d.src_h as f64 * step_px())
+		let (sw, sh) = step_px();
+		(title, d.cursor.0 - d.grab.0, d.cursor.1 - d.grab.1, d.src_w as f64 * sw, d.src_h as f64 * sh)
 	});
 
 	let ids: Vec<u64> = view.read().cells.iter().map(|c| c.group.id.0).collect();
@@ -355,10 +355,10 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 						let (ox, oy) = root_origin();
 						// Reference the moving block's center (ghost top-left + half its size), not the raw
 						// pointer — the cell the block visibly covers is where it lands.
-						let step = step_px();
-							let cx = c.x - d.grab.0 + d.src_w as f64 * step / 2.0;
-						let cy = c.y - d.grab.1 + d.src_h as f64 * step / 2.0;
-						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, step, CHROME_H, cols(), d.src_w, d.src_h);
+						let (sw, sh) = step_px();
+							let cx = c.x - d.grab.0 + d.src_w as f64 * sw / 2.0;
+						let cy = c.y - d.grab.1 + d.src_h as f64 * sh / 2.0;
+						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, sw, sh, CHROME_H, cols(), d.src_w, d.src_h);
 						// The model can only append (it has no tab geometry); refine the slot from the live
 						// preview's tab rects, skipping the ghost's own tab(s) so we read the source-free order.
 						if let DropTarget::Tab { group, index } = t {
@@ -412,6 +412,11 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		}
 	}
 }
+/// The live render unit (**px** per step on each axis: `(width/cols, height/rows)`) shared with every
+/// tile, the content overlay and the drag math via context, so all three scale together.
+#[derive(Clone, Copy)]
+struct StepPx(Signal<(f64, f64)>);
+
 /// The keyboard-driven pane state, shared with the tiles via context: which group the pane ops
 /// target (`focused`), and which — if any — is maximized to fill the container (`maximized`, a
 /// pure view override that never touches the model).
@@ -546,8 +551,8 @@ fn PackedFrame(idx: usize) -> Element {
 	let style = if *maximized.read() == Some(gid) {
 		"left:0; top:0; width:100%; height:100%;".to_string()
 	} else {
-		let sp = step();
-		format!("left:{}px; top:{}px; width:{}px; height:{}px;", x as f64 * sp, y as f64 * sp, w as f64 * sp, h as f64 * sp)
+		let (sw, sh) = step();
+		format!("left:{}px; top:{}px; width:{}px; height:{}px;", x as f64 * sw, y as f64 * sh, w as f64 * sw, h as f64 * sh)
 	};
 
 	// While a drag is armed, mark this cell if it's where the source lands (a grey shadow for
@@ -658,9 +663,9 @@ fn PackedFrame(idx: usize) -> Element {
 					onpointermove: move |e: PointerEvent| {
 						let Some(s) = resize() else { return };
 						let c = e.client_coordinates();
-						let step_px = step();
-							let dw = ((c.x - s.px) / step_px).round() as i64;
-						let dh = ((c.y - s.py) / step_px).round() as i64;
+						let (sw, sh) = step();
+							let dw = ((c.x - s.px) / sw).round() as i64;
+						let dh = ((c.y - s.py) / sh).round() as i64;
 						let nw = (s.w as i64 + dw).max(1) as u32;
 						let nh = (s.h as i64 + dh).max(1) as u32;
 						api.resize(idx, nw, nh);
@@ -770,7 +775,7 @@ impl Slot {
 	/// math the skeleton uses, so the two cannot drift apart. Inactive tabs stay mounted but
 	/// `display:none`. When a group is maximized, its active panel fills the container below the
 	/// chrome (matching the skeleton's maximized tile) and every other panel is hidden.
-	fn style(&self, maximized: Option<GroupId>, step_px: f64) -> String {
+	fn style(&self, maximized: Option<GroupId>, (step_w, step_h): (f64, f64)) -> String {
 		if let Some(mg) = maximized {
 			if self.group != mg || !self.active {
 				return "display:none;".into();
@@ -782,8 +787,8 @@ impl Slot {
 		}
 		// Tiles scale with the step px; the chrome band stays a fixed px (the header CSS pins it), so
 		// the content's top/height bridge the two with `calc`.
-		let (left, top) = (self.x as f64 * step_px, self.y as f64 * step_px);
-		let (width, height) = (self.w as f64 * step_px, self.h as f64 * step_px);
+		let (left, top) = (self.x as f64 * step_w, self.y as f64 * step_h);
+		let (width, height) = (self.w as f64 * step_w, self.h as f64 * step_h);
 		format!("display:block; left:{left}px; top:calc({top}px + {CHROME_H}px); width:{width}px; height:calc({height}px - {CHROME_H}px);")
 	}
 }

@@ -27,11 +27,12 @@ pub enum MinSize {
 }
 
 impl MinSize {
-	/// Whole-step minimum, ceil'd so a rem floor never rounds *down* below the author's intent.
-	pub fn resolve(&self, step_px: f64, rem_px: f64) -> (u32, u32) {
+	/// Whole-step minimum, ceil'd so a rem floor never rounds *down* below the author's intent. Steps
+	/// are sized independently per axis (`step_w`/`step_h`), so each dimension resolves against its own.
+	pub fn resolve(&self, step_w: f64, step_h: f64, rem_px: f64) -> (u32, u32) {
 		match self {
 			MinSize::Steps { w, h } => (w.0.max(1), h.0.max(1)),
-			MinSize::Rem { w, h } => (((w * rem_px / step_px).ceil() as u32).max(1), ((h * rem_px / step_px).ceil() as u32).max(1)),
+			MinSize::Rem { w, h } => (((w * rem_px / step_w).ceil() as u32).max(1), ((h * rem_px / step_h).ceil() as u32).max(1)),
 		}
 	}
 }
@@ -183,11 +184,11 @@ impl PackedGrid {
 	/// cell (top-left column/row = center minus half the block's own size). `mx`/`my` is the raw
 	/// pointer: it decides *which* tile we join or displace, so you aim with the cursor (header to
 	/// tab, body to push down) while the shadow stays centered on the block.
-	pub fn resolve_target(&self, px: f64, py: f64, mx: f64, my: f64, step: f64, chrome: f64, cols: u32, src_w: u32, src_h: u32) -> DropTarget {
-		let col = (((px - src_w as f64 * step / 2.0) / step).round().max(0.0) as u32).min(cols.saturating_sub(src_w));
+	pub fn resolve_target(&self, px: f64, py: f64, mx: f64, my: f64, step_w: f64, step_h: f64, chrome: f64, cols: u32, src_w: u32, src_h: u32) -> DropTarget {
+		let col = (((px - src_w as f64 * step_w / 2.0) / step_w).round().max(0.0) as u32).min(cols.saturating_sub(src_w));
 		for c in &self.cells {
-			let (l, t) = (c.x as f64 * step, c.y as f64 * step);
-			let (r, b) = ((c.x + c.w) as f64 * step, (c.y + c.h) as f64 * step);
+			let (l, t) = (c.x as f64 * step_w, c.y as f64 * step_h);
+			let (r, b) = ((c.x + c.w) as f64 * step_w, (c.y + c.h) as f64 * step_h);
 			if mx >= l && mx < r && my >= t && my < b {
 				// Header ⇒ join; body ⇒ shadow at the row below this tile (so it stays put), but at
 				// the block's own column — the x tracks the dragged block as it does in open space.
@@ -202,7 +203,7 @@ impl PackedGrid {
 				};
 			}
 		}
-		let row = ((py - src_h as f64 * step / 2.0) / step).round().max(0.0) as u32;
+		let row = ((py - src_h as f64 * step_h / 2.0) / step_h).round().max(0.0) as u32;
 		if row < skyline(&self.cells, col, src_w) {
 			DropTarget::Displace { x: col, y: row }
 		} else {

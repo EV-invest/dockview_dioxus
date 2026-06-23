@@ -47,8 +47,15 @@ pub struct Config {
 	/// hands out, so it can `save()` the current layout. A bare `Vec` is the whole API.
 	pub actions: Vec<(Keybind, dioxus::prelude::Callback<crate::render::packed::PackedApi>)>,
 	/// How many grid steps span the container's width. Fixed (not derived from font size): the
-	/// rendered step is `container_width / steps`, so the layout always stretches to fill — wider
-	/// container ⇒ bigger steps, narrower ⇒ smaller, the same tiles either way. A finer grid (more
-	/// steps) gives smaller resize/placement increments.
+	/// rendered horizontal step is `container_width / steps`, so the layout always stretches to fill —
+	/// wider container ⇒ bigger steps, narrower ⇒ smaller, the same tiles either way. A finer grid
+	/// (more steps) gives smaller resize/placement increments.
 	pub steps: u32 = 64,
+	/// How many grid steps span the container's height — the vertical twin of [`steps`](Self::steps).
+	/// The rendered vertical step is `container_height / rows`, so a tile's height tracks the
+	/// container's height just as its width tracks the container's width (shorter container ⇒ shorter
+	/// tiles). Dividing by a *fixed* row count (not the layout's used rows) keeps the whitespace-below
+	/// look: a layout shorter than `rows` leaves the slack empty. The default ≈ a square step on a
+	/// 16∶9 container (`64 × 9/16`).
+	pub rows: u32 = 36,
 }
