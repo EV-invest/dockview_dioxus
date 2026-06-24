@@ -119,6 +119,9 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let maximized = use_signal(|| None::<GroupId>);
 	// `?` toggles a small overlay listing the active keybinds.
 	let mut help = use_signal(|| false);
+	// `d` toggles a translucent dimensions popup over the container the mouse points at; `Esc`
+	// clears them all. Multiple can be open at once (one per group).
+	let popups = use_signal(HashSet::<GroupId>::new);
 
 	// Undo history of *solid* layouts: a snapshot is captured (by the effect below) only when the
 	// grid is at rest — no drag in flight, not mid-resize — and differs from the cursor's snapshot.
@@ -134,6 +137,18 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		use wasm_bindgen::{JsCast, closure::Closure};
 		let kb = cfg.keybinds;
 		let actions = cfg.actions.clone();
+		// Raw cursor, read only at `d`-press time to hit-test the grid. A plain Cell (not a Signal)
+		// because per-move reactivity would churn the whole render for nothing.
+		let cursor = std::rc::Rc::new(std::cell::Cell::new((0.0_f64, 0.0_f64)));
+		let track = cursor.clone();
+		let mv = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |e: web_sys::MouseEvent| {
+			track.set((e.client_x() as f64, e.client_y() as f64));
+		});
+		web_sys::window()
+			.expect("a browser window")
+			.add_event_listener_with_callback("pointermove", mv.as_ref().unchecked_ref())
+			.expect("add pointermove listener");
+		mv.forget();
 		let handler = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
 			// Don't hijack typing: ignore keys aimed at a form field / editable content, so a bare
 			// `u`/`f`/`Backspace` bind only acts on the layout, never on text the user is entering.
@@ -142,7 +157,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 					return;
 				}
 			}
-			let (mut grid, mut undo, mut focused, mut maximized, mut help) = (grid, undo, focused, maximized, help);
+			let (mut grid, mut undo, mut focused, mut maximized, mut help, mut popups) = (grid, undo, focused, maximized, help, popups);
 			let mut api = api;
 			// `key` is the produced character (layout-aware), not the physical position; shift is
 			// already baked into it (`"u"` vs `"U"`), so `matches` only checks alt/ctrl.
@@ -153,11 +168,12 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			// "works in Chrome, dead in Firefox" failure is the listener never seeing the event at
 			// all, in which case this line is simply absent for every key.
 			let recognized = |action: &str| web_sys::console::debug_1(&format!("dockview keybind: {key:?} (alt={alt}, ctrl={ctrl}) → {action}").into());
-			// Esc always dismisses the hint, regardless of the configured binds.
-			if help() && key == "Escape" {
+			// Esc always dismisses the hint and any open inspect popups, regardless of the binds.
+			if key == "Escape" && (help() || !popups.read().is_empty()) {
 				recognized("Escape");
 				e.prevent_default();
 				help.set(false);
+				popups.write().clear();
 				return;
 			}
 			if kb.undo.matches(&key, alt, ctrl) {
@@ -196,6 +212,30 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 				recognized("help");
 				e.prevent_default();
 				help.set(!help());
+			} else if key == "d" && !alt && !ctrl {
+				recognized("inspect");
+				let (cx, cy) = cursor.get();
+				let (ox, oy) = root_origin();
+				let (sw, sh) = (api.step_px)();
+				let g = grid.read();
+				let hit = if let Some(mg) = maximized() {
+					Some(mg) // maximized tile fills the view
+				} else {
+					g.cells
+						.iter()
+						.find(|c| {
+							let (gx, gy) = (cx - ox, cy - oy);
+							gx >= c.x as f64 * sw && gx < (c.x + c.w) as f64 * sw && gy >= c.y as f64 * sh && gy < (c.y + c.h) as f64 * sh
+						})
+						.map(|c| c.group.id)
+				};
+				if let Some(gid) = hit {
+					e.prevent_default();
+					let mut p = popups.write();
+					if !p.remove(&gid) {
+						p.insert(gid);
+					}
+				}
 			} else {
 				for (bind, run) in &actions {
 					if bind.matches(&key, alt, ctrl) {
@@ -311,6 +351,29 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	});
 
 	let ids: Vec<u64> = view.read().cells.iter().map(|c| c.group.id.0).collect();
+	// Inspect popups: one translucent `WxH` box per open group, placed from the same grid rect the
+	// tile uses. Dead/closed groups simply drop out of the filter (the set may keep stale ids).
+	let inspect: Vec<(String, String)> = {
+		let (sw, sh) = step_px();
+		let p = popups.read();
+		view.read()
+			.cells
+			.iter()
+			.filter(|c| p.contains(&c.group.id))
+			.map(|c| {
+				(
+					format!(
+						"left:{}px; top:{}px; width:{}px; height:{}px;",
+						c.x as f64 * sw,
+						c.y as f64 * sh,
+						c.w as f64 * sw,
+						c.h as f64 * sh
+					),
+					format!("{}x{}", c.w, c.h),
+				)
+			})
+			.collect()
+	};
 	let help_rows: Vec<(&str, String)> = [
 		("Undo", cfg.keybinds.undo),
 		("Redo", cfg.keybinds.redo),
@@ -320,6 +383,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	]
 	.into_iter()
 	.map(|(label, b)| (label, format!("{}{}{}", if b.ctrl { "Ctrl+" } else { "" }, if b.alt { "Alt+" } else { "" }, b.key)))
+	.chain(std::iter::once(("Inspect pane", "d".into())))
 	.collect();
 	// Cross-target sink for `cfg`: on non-wasm the keydown listener is absent, so this is the only
 	// consumer keeping `cfg` from orphaning into an unused-var warning.
@@ -345,6 +409,10 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 				PackedFrame { key: "{id}", idx }
 			}
 			div { class: "dv-overlay", PackedContent {} }
+
+			for (style , label) in inspect.iter() {
+				div { class: "dv-inspect", style: "{style}", span { "{label}" } }
+			}
 
 			// Drag capture: a fixed surface (the Dioxus-web stand-in for `setPointerCapture`)
 			// that owns pointermove/up for the whole gesture, so moves over child tiles don't

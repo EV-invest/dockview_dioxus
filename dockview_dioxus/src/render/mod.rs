@@ -64,6 +64,12 @@ pub(crate) const CSS: &str = r#"
 .dv-help-key { font-family: ui-monospace, monospace; background: var(--dv-tab-bg, #2d2d2d);
 	padding: 0 6px; border-radius: 3px; color: var(--dv-tab-active-fg, #fff); }
 .dv-help-foot { margin-top: 10px; opacity: 0.5; font-size: 11px; }
+/* `d` inspect popup: translucent dimensions box over a container, content shows through. */
+.dv-inspect { position: absolute; z-index: 1050; pointer-events: none;
+	display: flex; align-items: center; justify-content: center;
+	background: var(--dv-group-bg, rgba(30, 30, 30, 0.25));
+	border: 1px solid var(--dv-accent, #63e9cd);
+	color: var(--dv-tab-active-fg, #fff); font: 600 18px ui-monospace, monospace; }
 "#;
 
 impl From<dioxus::html::geometry::PixelsRect> for Rect {
