@@ -147,23 +147,33 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 			// `key` is the produced character (layout-aware), not the physical position; shift is
 			// already baked into it (`"u"` vs `"U"`), so `matches` only checks alt/ctrl.
 			let (key, alt, ctrl) = (e.key(), e.alt_key(), e.ctrl_key());
+			// Logs the moment a chord is *recognized* (a configured bind matched), before the action
+			// runs — so a console with this line but no visible effect means the action was a no-op
+			// (nothing focused, history empty), not that the keypress went unseen. The likeliest
+			// "works in Chrome, dead in Firefox" failure is the listener never seeing the event at
+			// all, in which case this line is simply absent for every key.
+			let recognized = |action: &str| web_sys::console::debug_1(&format!("dockview keybind: {key:?} (alt={alt}, ctrl={ctrl}) → {action}").into());
 			// Esc always dismisses the hint, regardless of the configured binds.
 			if help() && key == "Escape" {
+				recognized("Escape");
 				e.prevent_default();
 				help.set(false);
 				return;
 			}
 			if kb.undo.matches(&key, alt, ctrl) {
+				recognized("undo");
 				e.prevent_default();
 				if let Some(g) = undo.write().step(-1) {
 					*grid.write() = g;
 				}
 			} else if kb.redo.matches(&key, alt, ctrl) {
+				recognized("redo");
 				e.prevent_default();
 				if let Some(g) = undo.write().step(1) {
 					*grid.write() = g;
 				}
 			} else if kb.close.matches(&key, alt, ctrl) {
+				recognized("close");
 				if let Some(g) = focused() {
 					e.prevent_default();
 					api.close_active(g);
@@ -176,17 +186,20 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 					}
 				}
 			} else if kb.maximize.matches(&key, alt, ctrl) {
+				recognized("maximize");
 				let f = focused();
 				if f.is_some() {
 					e.prevent_default();
 					maximized.set(if maximized() == f { None } else { f });
 				}
 			} else if kb.help.matches(&key, alt, ctrl) {
+				recognized("help");
 				e.prevent_default();
 				help.set(!help());
 			} else {
 				for (bind, run) in &actions {
 					if bind.matches(&key, alt, ctrl) {
+						recognized("custom-action");
 						e.prevent_default();
 						run.call(api);
 						break;
