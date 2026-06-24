@@ -184,15 +184,22 @@ impl PackedGrid {
 	/// cell (top-left column/row = center minus half the block's own size). `mx`/`my` is the raw
 	/// pointer: it decides *which* tile we join or displace, so you aim with the cursor (header to
 	/// tab, body to push down) while the shadow stays centered on the block.
-	pub fn resolve_target(&self, px: f64, py: f64, mx: f64, my: f64, step_w: f64, step_h: f64, chrome: f64, cols: u32, src_w: u32, src_h: u32) -> DropTarget {
+	pub fn resolve_target(&self, source: &DragSource, px: f64, py: f64, mx: f64, my: f64, step_w: f64, step_h: f64, chrome: f64, cols: u32, src_w: u32, src_h: u32) -> DropTarget {
 		let col = (((px - src_w as f64 * step_w / 2.0) / step_w).round().max(0.0) as u32).min(cols.saturating_sub(src_w));
 		for c in &self.cells {
 			let (l, t) = (c.x as f64 * step_w, c.y as f64 * step_h);
 			let (r, b) = ((c.x + c.w) as f64 * step_w, (c.y + c.h) as f64 * step_h);
 			if mx >= l && mx < r && my >= t && my < b {
+				// Aiming your own header is a join only when it can reorder — a tab torn from a
+				// multi-tab group. A lone tab or a whole tile pointed at itself reads as a move,
+				// so treat its header like its body and fall through to Displace (matches the
+				// self-drop short-circuit in `drop`).
+				let self_no_join = c.group.id == source.group()
+					&& !matches!(source, DragSource::Tab { from, .. }
+						if self.cells[self.locate(*from).expect("drag source group exists")].group.tabs.len() > 1);
 				// Header ⇒ join; body ⇒ shadow at the row below this tile (so it stays put), but at
 				// the block's own column — the x tracks the dragged block as it does in open space.
-				return if my < t + chrome {
+				return if my < t + chrome && !self_no_join {
 					// Default to append; the render layer refines `index` from the live tab geometry.
 					DropTarget::Tab {
 						group: c.group.id,

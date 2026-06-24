@@ -371,7 +371,7 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 						let (sw, sh) = step_px();
 							let cx = c.x - d.grab.0 + d.src_w as f64 * sw / 2.0;
 						let cy = c.y - d.grab.1 + d.src_h as f64 * sh / 2.0;
-						let mut t = grid.read().resolve_target(cx - ox, cy - oy, c.x - ox, c.y - oy, sw, sh, CHROME_H, cols(), d.src_w, d.src_h);
+						let mut t = grid.read().resolve_target(&d.source, cx - ox, cy - oy, c.x - ox, c.y - oy, sw, sh, CHROME_H, cols(), d.src_w, d.src_h);
 						// The model can only append (it has no tab geometry); refine the slot from the live
 						// preview's tab rects, skipping the ghost's own tab(s) so we read the source-free order.
 						if let DropTarget::Tab { group, index } = t {
