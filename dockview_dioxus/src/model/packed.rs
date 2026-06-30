@@ -112,6 +112,21 @@ impl PackedGrid {
 		debug_assert!(self.overlaps().is_none(), "resize left an overlap");
 	}
 
+	/// Reflow every tile into a (possibly narrower) column count: clamp each tile's min/width to the
+	/// new span and slide it left so it can't spill past `cols`, then settle under [`gravity`]. Called
+	/// when the responsive band changes `cols`, so a layout built on a wide band never overflows a
+	/// narrower view (the source of the right-edge clip after a fullscreen round-trip). Widening is a
+	/// no-op — clamps only bind when shrinking.
+	pub fn refit(&mut self, cols: u32) {
+		for c in &mut self.cells {
+			c.min_w = c.min_w.min(cols).max(1);
+			c.w = c.w.clamp(c.min_w, cols);
+			c.x = c.x.min(cols - c.w);
+		}
+		gravity(&mut self.cells, None);
+		debug_assert!(self.overlaps().is_none(), "refit produced an overlap");
+	}
+
 	/// Close the active tab of a group; if that empties it, drop the tile and let the rest
 	/// settle upward under [`gravity`] — a freed column's tiles float up as far as they can,
 	/// matching insilico's pillar-removal.
@@ -500,6 +515,19 @@ mod tests {
 		no_overlap(&g.cells);
 		let c = g.cells.iter().find(|c| c.group.id == GroupId(1)).expect("cell present");
 		assert_eq!((c.x, c.y), (0, 2), "packed at the hovered column, on its skyline");
+	}
+
+	#[test]
+	fn refit_clamps_into_narrower_band() {
+		// A layout built on a 12-col band: a right-edge tile reaching col 12.
+		let mut g = PackedGrid::default();
+		g.cells = vec![cell(0, 0, 4, 2), cell(8, 0, 4, 2)];
+
+		g.refit(6);
+		no_overlap(&g.cells);
+		for c in &g.cells {
+			assert!(c.x + c.w <= 6, "tile spills past the narrowed band: {c:?}");
+		}
 	}
 
 	#[test]

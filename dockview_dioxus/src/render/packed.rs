@@ -342,6 +342,8 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		}
 		if *cols.peek() != c {
 			cols.set(c);
+			// Reflow tiles into the new band so a layout built wide never spills past a narrower view.
+			grid.write().refit(c);
 		}
 		step_px.set((width / c as f64, height / rows as f64));
 	});
