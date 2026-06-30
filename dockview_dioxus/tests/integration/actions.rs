@@ -9,50 +9,87 @@ use dockview_dioxus::{
 
 use crate::{
 	frng::Frng,
-	sim::{COLS, World},
+	sim::{MAX_COLS, MIN_COLS, World},
 };
 
 /// Action kinds, in the order their swarm weights are drawn.
-pub const N_KINDS: usize = 5;
+pub const N_KINDS: usize = 6;
 const PLACE: usize = 0;
 const RESIZE: usize = 1;
 const ADD_TAB: usize = 2;
 const CLOSE: usize = 3;
 const DROP: usize = 4;
+const REFIT: usize = 5;
 
 #[derive(Clone, Debug)]
 pub enum Action {
-	Place { w: u32, h: u32, min_w: u32, min_h: u32 },
-	Resize { idx: usize, new_w: u32, new_h: u32 },
-	AddTab { group: GroupId },
-	CloseActive { group: GroupId },
-	Drop { source: DragSource, target: DropTarget },
+	Place {
+		w: u32,
+		h: u32,
+		min_w: u32,
+		min_h: u32,
+	},
+	Resize {
+		idx: usize,
+		new_w: u32,
+		new_h: u32,
+	},
+	AddTab {
+		group: GroupId,
+	},
+	CloseActive {
+		group: GroupId,
+	},
+	Drop {
+		source: DragSource,
+		target: DropTarget,
+	},
+	/// A container resize: reflow the grid into a new view width.
+	Refit {
+		cols: u32,
+	},
 }
 
-pub fn apply(action: &Action, world: &mut World) {
+/// Apply `action`, returning the round-trip failure surfaced by a [`Refit`]; every other action
+/// is a structural edit that resets the round-trip baseline.
+pub fn apply(action: &Action, world: &mut World) -> Result<(), String> {
 	match action {
 		Action::Place { w, h, min_w, min_h } => {
+			world.structural_edit();
 			let gid = world.grid.mint_group_id();
 			let panel = world.mint_panel();
-			world.grid.place(dockview_dioxus::Group::new(gid, panel), *w, *h, (*min_w, *min_h), COLS);
+			world.grid.place(dockview_dioxus::Group::new(gid, panel), *w, *h, (*min_w, *min_h), world.cols);
 		}
-		Action::Resize { idx, new_w, new_h } => world.grid.resize(*idx, *new_w, *new_h, COLS),
+		Action::Resize { idx, new_w, new_h } => {
+			world.structural_edit();
+			world.grid.resize(*idx, *new_w, *new_h, world.cols);
+		}
 		Action::AddTab { group } => {
+			world.structural_edit();
 			let panel = world.mint_panel();
 			world.grid.add_tab(*group, panel);
 		}
-		Action::CloseActive { group } => world.grid.close_active(*group),
-		Action::Drop { source, target } => world.grid.drop(source.clone(), target.clone(), COLS),
+		Action::CloseActive { group } => {
+			world.structural_edit();
+			world.grid.close_active(*group);
+		}
+		Action::Drop { source, target } => {
+			world.structural_edit();
+			world.grid.drop(source.clone(), target.clone(), world.cols);
+		}
+		Action::Refit { cols } => return world.refit(*cols),
 	}
+	Ok(())
 }
 
 /// Pick a valid action for the current `world`, weighting kinds by the per-run `weights`
-/// (swarm). Returns `None` only when the grid is empty and nothing but `Place` is possible but
-/// weighted out — the run then ends.
+/// (swarm). Returns `None` only when the grid is empty and nothing but `Place`/`Refit` is
+/// possible but both are weighted out — the run then ends.
 pub fn generate(frng: &mut Frng, world: &World, weights: &[u32; N_KINDS]) -> Option<Action> {
 	let cells = &world.grid.cells;
+	let cols = world.cols;
 
-	let mut avail = vec![PLACE]; // placing a fresh tile is always possible.
+	let mut avail = vec![PLACE, REFIT]; // placing a fresh tile / resizing the view are always possible.
 	if !cells.is_empty() {
 		avail.push(RESIZE);
 		avail.push(ADD_TAB);
@@ -65,7 +102,7 @@ pub fn generate(frng: &mut Frng, world: &World, weights: &[u32; N_KINDS]) -> Opt
 
 	Some(match kind {
 		PLACE => {
-			let w = 1 + frng.below(4); // 1..=4, ≤ COLS
+			let w = 1 + frng.below(4); // 1..=4; may exceed a narrow view, so place must clamp it.
 			let h = 1 + frng.below(4);
 			Action::Place {
 				w,
@@ -109,10 +146,13 @@ pub fn generate(frng: &mut Frng, world: &World, weights: &[u32; N_KINDS]) -> Opt
 					let c = &cells[frng.below(cells.len() as u32) as usize];
 					DropTarget::Displace { x: c.x, y: c.y }
 				}
-				_ => DropTarget::Pack { x: frng.below(COLS) },
+				_ => DropTarget::Pack { x: frng.below(cols) },
 			};
 			Action::Drop { source, target }
 		}
+		REFIT => Action::Refit {
+			cols: MIN_COLS + frng.below(MAX_COLS - MIN_COLS + 1),
+		},
 		_ => unreachable!("kind is one of the constants pushed into `avail`"),
 	})
 }

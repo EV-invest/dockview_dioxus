@@ -49,6 +49,21 @@ pub struct Cell {
 	pub h: u32,
 	pub min_w: u32,
 	pub min_h: u32,
+	/// Pre-clamp width/left-edge, set by [`refit`](PackedGrid::refit)/[`place`](PackedGrid::place)
+	/// only when a view too narrow to hold the tile forced `w`/`x` smaller than the tile wants.
+	/// They carry the full-scale intent across a band change, so widening the view restores the
+	/// tile exactly (`None` once it fits again). Any explicit edit (resize/drop) clears them — the
+	/// new geometry *is* the intent. `#[serde(default)]` keeps pre-field layouts loadable.
+	#[serde(default)]
+	pub desired_w: Option<u32>,
+	#[serde(default)]
+	pub desired_x: Option<u32>,
+	/// Vertical stacking order, fixed at the last structural edit (see
+	/// [`reassign_ranks`](PackedGrid::reassign_ranks)). [`refit`](PackedGrid::refit) settles by this,
+	/// not by the transient `y`, so collapsing tiles into a narrow band and back reproduces their
+	/// exact order — a path-independent anchor the live `y` can't provide.
+	#[serde(default)]
+	pub rank: u32,
 }
 
 /// Lifecycle of the grid w.r.t. user gestures. The no-overlap invariant
@@ -80,19 +95,38 @@ impl PackedGrid {
 		self.cells.iter().position(|c| c.group.id == id)
 	}
 
-	/// Auto-pack `group` at the [`pack`]-chosen `(x, y)`, storing its resolved per-type min.
+	/// Auto-pack `group` at the [`pack`]-chosen `(x, y)`, storing its resolved per-type min. A tile
+	/// wider than the view is clamped to fit (its wanted width kept in `desired_w`, so a later
+	/// widening restores it), since `pack` can't seat something it can't contain.
 	pub fn place(&mut self, group: Group, w: u32, h: u32, min: (u32, u32), cols: u32) {
-		let (x, y) = pack(&self.cells, w, h, cols);
+		let eff_w = w.min(cols);
+		let (x, y) = pack(&self.cells, eff_w, h, cols);
 		self.cells.push(Cell {
 			group,
 			x,
 			y,
-			w,
+			w: eff_w,
 			h,
 			min_w: min.0,
 			min_h: min.1,
+			desired_w: (eff_w != w).then_some(w),
+			desired_x: None,
+			rank: 0,
 		});
+		self.reassign_ranks();
 		debug_assert!(self.overlaps().is_none(), "place produced an overlap");
+	}
+
+	/// Record the current top-to-bottom stacking order onto each cell's [`rank`](Cell::rank), so a
+	/// later [`refit`](Self::refit) can preserve it independently of the transient `y`. Called after
+	/// every *structural* edit (place/resize/drop/close): the resulting visual order becomes the
+	/// order a band change will reflow within. `(y, x)` is a total order over non-overlapping cells.
+	fn reassign_ranks(&mut self) {
+		let mut order: Vec<usize> = (0..self.cells.len()).collect();
+		order.sort_by_key(|&i| (self.cells[i].y, self.cells[i].x));
+		for (rank, &i) in order.iter().enumerate() {
+			self.cells[i].rank = rank as u32;
+		}
 	}
 
 	/// Resize a tile by its bottom-right grip (top-left pinned). Width is bound to the view
@@ -104,26 +138,59 @@ impl PackedGrid {
 			let c = &self.cells[idx];
 			(c.x, c.min_w, c.min_h)
 		};
-		let max_w = cols.saturating_sub(x).max(min_w);
+		// Widest the tile can be from its pinned left edge. The view span caps the result even below
+		// `min_w`: a tile whose min can't fit the current view fills it rather than spilling (the same
+		// rule `place`/`refit` follow).
+		let span = cols.saturating_sub(x).max(1);
 		let c = &mut self.cells[idx];
-		c.w = new_w.clamp(min_w, max_w);
+		c.w = new_w.max(min_w).min(span);
 		c.h = new_h.max(min_h);
+		// An explicit resize is fresh intent at this view: drop any pre-clamp memory so a later
+		// widening keeps the size the user just chose rather than snapping back to an old want.
+		c.desired_w = None;
+		c.desired_x = None;
 		gravity(&mut self.cells, Some(idx));
+		self.reassign_ranks();
 		debug_assert!(self.overlaps().is_none(), "resize left an overlap");
 	}
 
-	/// Reflow every tile into a (possibly narrower) column count: clamp each tile's min/width to the
-	/// new span and slide it left so it can't spill past `cols`, then settle under [`gravity`]. Called
-	/// when the responsive band changes `cols`, so a layout built on a wide band never overflows a
-	/// narrower view (the source of the right-edge clip after a fullscreen round-trip). Widening is a
-	/// no-op — clamps only bind when shrinking.
+	/// Reflow every tile into a new column count, then settle under [`gravity`]. Each tile aims for
+	/// its *wanted* width/left-edge (`desired_*` if a narrower view earlier clamped it, else its
+	/// current `w`/`x`), clamps that to fit `cols`, and re-stores any leftover want in `desired_*`.
+	/// So the clamp is non-destructive: widening back to a span that fits restores `w`/`x` exactly
+	/// (and `gravity` then recomputes the same `y`), making a resize round-trip a no-op — the fix for
+	/// the right-edge clip *and* the "small-then-big resets my layout" loss. Called whenever the
+	/// responsive band changes `cols`.
 	pub fn refit(&mut self, cols: u32) {
 		for c in &mut self.cells {
-			c.min_w = c.min_w.min(cols).max(1);
-			c.w = c.w.clamp(c.min_w, cols);
-			c.x = c.x.min(cols - c.w);
+			let want_w = c.desired_w.unwrap_or(c.w);
+			let want_x = c.desired_x.unwrap_or(c.x);
+			// Re-honor the type's min floor (capped by the view), so a width an earlier narrow view
+			// forced below it heals the moment the view is wide enough again.
+			let floor = c.min_w.min(cols).max(1);
+			let eff_w = want_w.clamp(floor, cols);
+			let eff_x = want_x.min(cols - eff_w);
+			c.desired_w = (eff_w != want_w).then_some(want_w);
+			c.desired_x = (eff_x != want_x).then_some(want_x);
+			c.w = eff_w;
+			c.x = eff_x;
 		}
-		gravity(&mut self.cells, None);
+		// Settle in the stored stacking order, not by the transient `y`: each tile rests on the skyline
+		// of the lower-ranked tiles sharing its columns. `rank` is fixed until the next structural edit,
+		// so this is a pure function of (rank, clamped widths, cols) — refitting to a band and back is a
+		// no-op, which is exactly the round-trip property the fuzzer asserts.
+		let mut order: Vec<usize> = (0..self.cells.len()).collect();
+		order.sort_by_key(|&i| (self.cells[i].rank, i));
+		for k in 0..order.len() {
+			let i = order[k];
+			let (x, w) = (self.cells[i].x, self.cells[i].w);
+			self.cells[i].y = order[..k]
+				.iter()
+				.filter(|&&j| self.cells[j].x < x + w && x < self.cells[j].x + self.cells[j].w)
+				.map(|&j| self.cells[j].y + self.cells[j].h)
+				.max()
+				.unwrap_or(0);
+		}
 		debug_assert!(self.overlaps().is_none(), "refit produced an overlap");
 	}
 
@@ -136,6 +203,7 @@ impl PackedGrid {
 		if self.cells[idx].group.remove_tab(&active) {
 			self.cells.remove(idx);
 			gravity(&mut self.cells, None);
+			self.reassign_ranks();
 			debug_assert!(self.overlaps().is_none(), "close left an overlap");
 		}
 	}
@@ -293,6 +361,9 @@ impl PackedGrid {
 					h,
 					min_w,
 					min_h,
+					desired_w: None,
+					desired_x: None,
+					rank: 0,
 				});
 				let pin = self.cells.len() - 1;
 				gravity(&mut self.cells, Some(pin));
@@ -300,10 +371,22 @@ impl PackedGrid {
 			DropTarget::Pack { x } => {
 				let x = clamp_x(x);
 				let y = skyline(&self.cells, x, w);
-				self.cells.push(Cell { group, x, y, w, h, min_w, min_h });
+				self.cells.push(Cell {
+					group,
+					x,
+					y,
+					w,
+					h,
+					min_w,
+					min_h,
+					desired_w: None,
+					desired_x: None,
+					rank: 0,
+				});
 				gravity(&mut self.cells, None);
 			}
 		}
+		self.reassign_ranks();
 		debug_assert!(self.overlaps().is_none(), "drop produced an overlap");
 	}
 }
@@ -405,6 +488,9 @@ mod tests {
 			h,
 			min_w: 1,
 			min_h: 1,
+			desired_w: None,
+			desired_x: None,
+			rank: 0,
 		}
 	}
 

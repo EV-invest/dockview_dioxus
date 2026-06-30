@@ -28,8 +28,10 @@ pub fn check(grid: &PackedGrid, cols: u32) -> Result<(), String> {
 	let mut groups = HashSet::new();
 	let mut panels = HashSet::new();
 	for c in &grid.cells {
-		if c.w < c.min_w || c.h < c.min_h {
-			return Err(format!("cell below its min: {c:?} (min {}x{})", c.min_w, c.min_h));
+		// A tile must meet its min, unless the view itself is narrower than that min — then filling
+		// the view (w == cols) is the best it can do, so a clamp to `cols` is allowed.
+		if c.w < c.min_w.min(cols) || c.h < c.min_h {
+			return Err(format!("cell below its min: {c:?} (min {}x{}, cols {cols})", c.min_w, c.min_h));
 		}
 		if c.x + c.w > cols {
 			return Err(format!("cell spills past cols={cols}: {c:?}"));
