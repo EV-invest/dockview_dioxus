@@ -24,7 +24,7 @@ use dioxus::{html::input_data::MouseButton, prelude::*};
 
 use super::CSS;
 use crate::{
-	config::Config,
+	config::{Breakpoint, Config},
 	math::Rect,
 	model::{
 		Group, GroupId, PanelId,
@@ -52,6 +52,10 @@ pub struct PackedApi {
 	/// Live px-per-step on each axis (`width / cols`, `height / rows`), the units [`MinSize::Rem`]
 	/// resolves against.
 	pub step_px: Signal<(f64, f64)>,
+	/// Live responsive band (classified from the container width). `cols`/`rows` are this band's
+	/// scaling of the config's desktop counts, so a host persists the view separately per band by
+	/// keying storage on it (see [`Breakpoint`]).
+	pub breakpoint: Signal<Breakpoint>,
 }
 
 impl PackedApi {
@@ -104,12 +108,14 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	// Owned by the root, not this scope: `PackedApi` is handed to the host via `on_ready` and
 	// driven from outside `PackedArea`'s subtree, so the signals must outlive this component.
 	let mut grid = use_hook(|| Signal::new_in_scope(PackedGrid::default(), ScopeId::ROOT));
-	// Fixed column count from the config: the grid always spans these, stretching the step size.
-	let cols = use_hook(|| Signal::new_in_scope(steps, ScopeId::ROOT));
+	// Column count for the current band: the grid always spans these, stretching the step size. Set
+	// by the fit effect below from the measured width; seeded at the desktop count.
+	let mut cols = use_hook(|| Signal::new_in_scope(steps, ScopeId::ROOT));
 	// Px-per-step on each axis the whole render uses; recomputed by the fit effect below. (0, 0)
 	// until first measure.
 	let mut step_px = use_hook(|| Signal::new_in_scope((0.0_f64, 0.0_f64), ScopeId::ROOT));
-	let api = PackedApi { grid, cols, step_px };
+	let mut breakpoint = use_hook(|| Signal::new_in_scope(Breakpoint::default(), ScopeId::ROOT));
+	let api = PackedApi { grid, cols, step_px, breakpoint };
 	let mut drag = use_signal(|| None::<Drag>);
 	let mut root_origin = use_signal(|| (0.0_f64, 0.0_f64));
 	let mut root_size = use_signal(|| (0.0_f64, 0.0_f64));
@@ -319,17 +325,25 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 		}
 	};
 
-	// Stretch the fixed `cols × rows` grid across the container on both axes: a horizontal step is
-	// `width / cols`, a vertical one `height / rows`, so the layout always spans the full container —
-	// each tile's width tracks the container's width and its height tracks the container's height
-	// (widen ⇒ wider tiles, shorten ⇒ shorter tiles). Dividing by the fixed counts (not the used
-	// extent) keeps the whitespace a shorter/narrower layout leaves around itself.
+	// Classify the measured width into a responsive band, then stretch the grid across the container:
+	// a horizontal step is `width / cols` (cols scaled per band), a vertical one `height / rows` (rows
+	// fixed). Fewer columns on a narrower band keep the step's physical size ~constant, so tiles
+	// reflow/stack down on a phone instead of shrinking. `peek`s (not reads) on the values we also
+	// write, so the effect doesn't re-trigger itself.
 	use_effect(move || {
 		let (width, height) = root_size();
 		if width <= 0.0 || height <= 0.0 {
 			return;
 		}
-		step_px.set((width / cols() as f64, height / rows as f64));
+		let bp = Breakpoint::of(width);
+		let c = bp.scale_cols(steps);
+		if *breakpoint.peek() != bp {
+			breakpoint.set(bp);
+		}
+		if *cols.peek() != c {
+			cols.set(c);
+		}
+		step_px.set((width / c as f64, height / rows as f64));
 	});
 
 	// The floating ghost of whatever is being dragged: it tracks the pointer 1:1 (`cursor − grab`),

@@ -46,16 +46,77 @@ pub struct Config {
 	/// collision (the listener tries them first); the closure gets the same [`PackedApi`] `on_ready`
 	/// hands out, so it can `save()` the current layout. A bare `Vec` is the whole API.
 	pub actions: Vec<(Keybind, dioxus::prelude::Callback<crate::render::packed::PackedApi>)>,
-	/// How many grid steps span the container's width. Fixed (not derived from font size): the
-	/// rendered horizontal step is `container_width / steps`, so the layout always stretches to fill —
-	/// wider container ⇒ bigger steps, narrower ⇒ smaller, the same tiles either way. A finer grid
+	/// Desktop (`Xl`) column count: how many grid steps span the container's width on a wide screen.
+	/// Smaller [`Breakpoint`]s scale this down so the *physical* step stays ~constant and tiles reflow
+	/// instead of shrinking (see [`Breakpoint::scale_cols`]). The rendered horizontal step is
+	/// `container_width / cols`, so within a band the layout still stretches to fill. A finer grid
 	/// (more steps) gives smaller resize/placement increments.
 	pub steps: u32 = 64,
-	/// How many grid steps span the container's height — the vertical twin of [`steps`](Self::steps).
-	/// The rendered vertical step is `container_height / rows`, so a tile's height tracks the
-	/// container's height just as its width tracks the container's width (shorter container ⇒ shorter
-	/// tiles). Dividing by a *fixed* row count (not the layout's used rows) keeps the whitespace-below
-	/// look: a layout shorter than `rows` leaves the slack empty. The default ≈ a square step on a
-	/// 16∶9 container (`64 × 9/16`).
+	/// Row count — the vertical twin of [`steps`](Self::steps), but *not* scaled per [`Breakpoint`]:
+	/// a narrow band is usually a taller device, so the `container_height / rows` vertical step
+	/// already tracks the screen without help. Dividing by a *fixed* row count, not the used rows,
+	/// keeps the whitespace-below look. The default ≈ a square step on a 16∶9 container (`64 × 9/16`).
 	pub rows: u32 = 36,
+}
+
+/// Responsive width bands — Bootstrap's xs/sm/md/lg/xl boundaries (CSS px). The grid's column and
+/// row counts are derived per band so the *physical* step size stays ~constant across devices: a
+/// phone gets fewer steps than a desktop, so the same tiles reflow and stack down instead of
+/// shrinking to illegibility. The count is fixed within a band (the grid still stretches to fill),
+/// so a layout has one stable signature per band — persist one layout per `Breakpoint`, keyed by
+/// its [`Display`](std::fmt::Display) name (`xs`/`sm`/`md`/`lg`/`xl`).
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, Eq, Hash, PartialEq, serde::Serialize)]
+pub enum Breakpoint {
+	Xs,
+	Sm,
+	Md,
+	Lg,
+	#[default]
+	Xl,
+}
+
+impl Breakpoint {
+	/// Classify a container width (CSS px) into its band (Bootstrap's boundaries).
+	pub(crate) fn of(width: f64) -> Self {
+		match width {
+			w if w < 576.0 => Self::Xs,
+			w if w < 768.0 => Self::Sm,
+			w if w < 992.0 => Self::Md,
+			w if w < 1200.0 => Self::Lg,
+			_ => Self::Xl,
+		}
+	}
+
+	/// Design width the band scales against — its upper edge (the next band's [`of`](Self::of)
+	/// threshold), with `Xl` (open-ended) capped at 1600.
+	const fn design(self) -> f64 {
+		match self {
+			Self::Xs => 576.0,
+			Self::Sm => 768.0,
+			Self::Md => 992.0,
+			Self::Lg => 1200.0,
+			Self::Xl => 1600.0,
+		}
+	}
+
+	/// Scale a desktop-tuned ([`Config`]) column count down to this band (≥ 1). `base · design /
+	/// design(Xl)` holds the horizontal step's physical px ~constant — scaling the count by the
+	/// band's width gives the same step size, hence the reflow rather than a shrink. Only *columns*
+	/// scale: rows stay put because a narrow band is usually a taller device, so its height (and the
+	/// `height / rows` vertical step) already tracks the screen on its own.
+	pub(crate) fn scale_cols(self, base: u32) -> u32 {
+		((base as f64 * self.design() / Self::Xl.design()).round() as u32).max(1)
+	}
+}
+
+impl std::fmt::Display for Breakpoint {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			Self::Xs => "xs",
+			Self::Sm => "sm",
+			Self::Md => "md",
+			Self::Lg => "lg",
+			Self::Xl => "xl",
+		})
+	}
 }

@@ -37,7 +37,7 @@ gloo-timers = { workspace = true, features = ["futures"] }
 # Examples live at the repo root (workspace level), so point back in from the package.
 [[example]]
 name = "insilico"
-path = "../examples/insilico.rs"
+path = "../examples/insilico/main.rs"
 
 [[test]]
 name = "integration"

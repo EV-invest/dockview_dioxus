@@ -1,3 +1,6 @@
+[build]
+rustc-wrapper = "sccache"
+
 [profile.rust]
 codegen-backend = "cranelift"
 

@@ -21,7 +21,7 @@ pub mod panel;
 pub mod persist;
 pub mod render;
 
-pub use config::{Config, Keybind, Keybinds};
+pub use config::{Breakpoint, Config, Keybind, Keybinds};
 pub use model::{
 	Group, GroupId, PanelId,
 	packed::{MinSize, PackedGrid, Step},
