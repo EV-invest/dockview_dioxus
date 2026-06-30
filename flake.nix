@@ -77,6 +77,13 @@
             };
           };
 
+        apps.dev = {
+          type = "app";
+          program = "${pkgs.writeShellScript "dev" ''
+            exec ${pkgs.dioxus-cli}/bin/dx serve --example insilico --package dockview_dioxus
+          ''}";
+        };
+
         devShells.default =
           with pkgs;
           mkShell {
