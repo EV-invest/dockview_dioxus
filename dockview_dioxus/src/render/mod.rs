@@ -42,10 +42,12 @@ pub(crate) const CSS: &str = r#"
 	cursor: nwse-resize; z-index: 101; background: var(--dv-resize-bg, #555); }
 .dv-resize-handle::after { content: "⌟"; position: absolute; right: 1px; bottom: -3px;
 	font-size: 13px; line-height: 1; color: var(--dv-fg, #ddd); }
-.dv-packed { position: relative; width: 100%; height: 100%; overflow: auto;
+/* Horizontal is fully model-bounded (every tile satisfies x + w ≤ cols), so a horizontal
+   scrollbar is never legitimate — clip it. Only the vertical axis (whitespace/stack below) scrolls. */
+.dv-packed { position: relative; width: 100%; height: 100%; overflow-x: hidden; overflow-y: auto;
 	color: var(--dv-fg, #ddd); font: 13px/1.4 system-ui, sans-serif; }
-.dv-tile { position: absolute; overflow: hidden; background: var(--dv-group-bg, #1e1e1e);
-	border: 1px solid var(--dv-tab-border, #333); }
+.dv-tile { position: absolute; overflow: hidden; box-sizing: border-box;
+	background: var(--dv-group-bg, #1e1e1e); border: 1px solid var(--dv-tab-border, #333); }
 /* Drop feedback: the landing cell drawn as a plain greyed-out area (no chrome, no content),
    the floating ghost that tracks the pointer, and a Tab target's drop site. */
 .dv-shadow { background: var(--dv-shadow-bg, rgba(160, 160, 160, 0.18)); border-style: dashed; }

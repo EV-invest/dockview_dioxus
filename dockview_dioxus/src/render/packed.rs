@@ -320,8 +320,19 @@ pub fn PackedArea(panels: Signal<Vec<DockPanel>>, on_ready: Option<Callback<Pack
 	let measure = move |h: Rc<MountedData>| async move {
 		if let Ok(rect) = h.get_client_rect().await {
 			let r: Rect = rect.into();
-			root_size.set((r.width, r.height));
 			root_origin.set((r.x, r.y));
+			// Size the grid from the *content* box, not the bounding rect: getBoundingClientRect's
+			// width/height include the vertical scrollbar's gutter, but the tiles live in
+			// clientWidth/Height, which exclude it. Dividing the wider rect by `cols` sized the
+			// rightmost column to spill under the scrollbar and grow a spurious horizontal one.
+			#[cfg(target_arch = "wasm32")]
+			let (w, ht) = {
+				use dioxus::web::WebEventExt;
+				h.try_as_web_event().map(|e| (e.client_width() as f64, e.client_height() as f64)).unwrap_or((r.width, r.height))
+			};
+			#[cfg(not(target_arch = "wasm32"))]
+			let (w, ht) = (r.width, r.height);
+			root_size.set((w, ht));
 		}
 	};
 
