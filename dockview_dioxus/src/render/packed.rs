@@ -88,6 +88,9 @@ impl PackedApi {
 	/// reset) on a corrupt or future-version payload.
 	pub fn load(&mut self, json: &str) -> Result<(), serial::LoadError> {
 		*self.grid.write() = serial::load(json)?;
+		// The file may have been saved in another band: settle it into the live geometry.
+		let cols = *self.cols.peek();
+		self.grid.write().refit(cols);
 		Ok(())
 	}
 }
